@@ -5,7 +5,7 @@ import threading
 import random
 
 # ==================== CONFIGURATION ====================
-BOT_TOKEN = "8584446948:AAGcAlxJeCfwgoFhQ2C9IdEGAkdD-SY93G8"
+BOT_TOKEN = "7326105005:AAGDMmfP8TSS4W4fmGMF6cPDf2A4XVekSZg"
 API_BASE_URL = "https://api.telegram.org/bot" + BOT_TOKEN
 
 # Proxy for Telegram API (set if api.telegram.org is blocked in your country)
@@ -1318,3 +1318,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
