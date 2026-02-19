@@ -950,15 +950,46 @@ def extract_cards_from_text(text, max_cards=20):
     return result
 
 def check_card_gateway(card_format, api_url):
-    """Call a gateway API (pp or b3) and return raw response text"""
+    """Call a gateway API (pp or b3) and return parsed result dict"""
     url = api_url + card_format
     try:
         response = requests.get(url, timeout=60)
-        return response.text.strip()
+        raw = response.text.strip()
     except requests.exceptions.Timeout:
-        return "TIMEOUT"
+        return {"status": "ERROR", "response": "TIMEOUT", "raw": "TIMEOUT"}
     except requests.exceptions.RequestException as e:
-        return f"CONNECTION_ERROR: {str(e)[:80]}"
+        msg = f"CONNECTION_ERROR: {str(e)[:80]}"
+        return {"status": "ERROR", "response": msg, "raw": msg}
+
+    # Try to parse JSON
+    try:
+        data = json.loads(raw)
+        status  = str(data.get("status",   data.get("Status",   ""))).strip().upper()
+        resp    = str(data.get("response", data.get("Response", data.get("message", data.get("msg", ""))))).strip()
+        extra   = str(data.get("info",     data.get("Info",     data.get("details", "")))).strip()
+        return {"status": status, "response": resp, "extra": extra, "raw": raw}
+    except (json.JSONDecodeError, ValueError):
+        # Plain text fallback
+        raw_upper = raw.upper()
+        if any(k in raw_upper for k in ["APPROVED", "SUCCESS", "CHARGED", "LIVE"]):
+            status = "APPROVED"
+        elif any(k in raw_upper for k in ["DECLINED", "INVALID", "STOLEN", "LOST", "BLOCKED", "EXPIRED", "FAIL"]):
+            status = "DECLINED"
+        else:
+            status = "UNKNOWN"
+        return {"status": status, "response": raw[:200], "extra": "", "raw": raw}
+
+def _gateway_status_emoji(status):
+    """Return emoji + label based on status string"""
+    s = status.upper()
+    # LIVE / APPROVED / SUCCESS / CVV MATCH / INSUFFICIENT FUNDS = card is valid
+    if any(k in s for k in ["APPROVED", "SUCCESS", "CHARGED", "LIVE", "CVV", "INSUFFICIENT"]):
+        return "✅", "LIVE"
+    # Hard declines
+    if any(k in s for k in ["DECLINED", "INVALID", "STOLEN", "LOST", "BLOCKED", "EXPIRED", "FAIL", "FRAUD", "REJECTED"]):
+        return "❌", "DEAD"
+    # Soft / unknown
+    return "⚠️", "UNKNOWN"
 
 def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway):
     """Generic handler for /pp and /b3 commands.
@@ -976,8 +1007,7 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
         gate_name = "Braintree"
         gate_emoji = "🌿"
     
-    # Extract cards from the entire message text (skip the command itself)
-    # Remove the command prefix to search the rest
+    # Extract cards from the message (after the command)
     parts = text.split(maxsplit=1)
     search_text = parts[1] if len(parts) > 1 else ""
     
@@ -999,7 +1029,7 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
         return
     
     total = len(cards)
-    status_text = (
+    status_msg_id = send_message(chat_id,
         f"{gate_emoji} <b>{gate_name} Checker</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: {user_name}\n"
@@ -1007,7 +1037,6 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"⏳ Processing..."
     )
-    status_msg_id = send_message(chat_id, status_text)
     msg_ids_to_delete.append(status_msg_id)
     
     results_text = []
@@ -1016,26 +1045,31 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
     start_time = time.time()
     
     for i, card_format in enumerate(cards, 1):
-        raw = check_card_gateway(card_format, api_url)
+        data = check_card_gateway(card_format, api_url)
         
-        # Determine result emoji based on response keywords
-        raw_upper = raw.upper()
-        if any(k in raw_upper for k in ["APPROVED", "SUCCESS", "CHARGED", "LIVE", "CVV", "INSUFFICIENT"]):
-            emoji = "✅"
+        status_val = data.get("status", "UNKNOWN")
+        resp_val   = data.get("response", "")
+        extra_val  = data.get("extra", "")
+        
+        emoji, label = _gateway_status_emoji(status_val)
+        
+        if label == "LIVE":
             live_count += 1
-        elif any(k in raw_upper for k in ["DECLINED", "INVALID", "STOLEN", "LOST", "BLOCKED", "EXPIRED", "ERROR", "TIMEOUT", "FAIL"]):
-            emoji = "❌"
-            die_count += 1
         else:
-            emoji = "⚠️"
             die_count += 1
         
-        # Truncate long responses
-        display_raw = raw[:120] + "..." if len(raw) > 120 else raw
-        result_line = f"{emoji} <code>{card_format}</code>\n   ↳ {display_raw}"
+        # Build clean result line
+        result_line = (
+            f"{emoji} <code>{card_format}</code>\n"
+            f"   ├ Status: <b>{status_val}</b>\n"
+            f"   └ Info: {resp_val}"
+        )
+        if extra_val:
+            result_line += f"\n   └ Extra: {extra_val}"
+        
         results_text.append(result_line)
         
-        # Update status every card (or every 3 for large batches)
+        # Update progress message
         update_interval = 1 if total <= 10 else 3
         if status_msg_id and (i % update_interval == 0 or i == total):
             elapsed = int(time.time() - start_time)
