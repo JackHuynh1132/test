@@ -28,6 +28,9 @@ ADMIN_IDS = [1911136815]
 # Each user has their own settings, does not affect others
 user_settings = {}
 
+# Bot running state - admin can stop/start processing
+bot_running = True
+
 def is_admin(user_id):
     """Check if user is admin"""
     return user_id in ADMIN_IDS
@@ -283,38 +286,45 @@ def get_settings(user_id):
 def handle_start(chat_id, user_msg_id):
     """Handle /start command"""
     text = (
-        "🔥 <b>Card Checker Bot</b> 🔥\n"
+        "🔥 <b>Card Checker Bot</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📋 <b>Commands:</b>\n\n"
-        "🔹 <code>/chg card1|mm|yyyy|cvv</code>\n"
-        "    Check single or multiple cards\n"
-        "    (one card per line after /chg)\n\n"
-        "🔹 <code>/setsite https://store.myshopify.com</code>\n"
-        "    Change YOUR site (personal)\n\n"
-        "🔹 <code>/setproxy host:port:user:pass</code>\n"
-        "    Change YOUR proxy (personal)\n\n"
-        "🔹 <code>/settings</code>\n"
-        "    View your current settings\n\n"
-        "🔹 <code>/resetsite</code> / <code>/resetproxy</code>\n"
-        "    Reset to default\n\n"
-        "🔹 <code>/listsite</code>\n"
-        "    Xem danh sách site có thể dùng\n"
-        "    (fix lỗi 'no product ID')\n\n"
+
+        "💳 <b>CHECK CARDS</b>\n"
+        "<code>/chg 4111111111111111|03|2026|123</code>\n"
+        "<code>/chg</code>  <i>(nhiều thẻ, mỗi dòng 1 thẻ)</i>\n\n"
+
+        "🎲 <b>GENERATE CARDS</b>\n"
+        "<code>/gen 414170</code>  — 10 thẻ ngẫu nhiên\n"
+        "<code>/gen 414170 20</code>  — 20 thẻ\n"
+        "<code>/gen 414170|03|2026</code>  — cố định exp\n\n"
+
+        "⚙️ <b>SETTINGS</b>\n"
+        "<code>/settings</code>  — Xem cài đặt hiện tại\n"
+        "<code>/setsite URL</code>  — Đổi site\n"
+        "<code>/setproxy host:port:user:pass</code>  — Đổi proxy\n"
+        "<code>/resetsite</code>  /  <code>/resetproxy</code>  — Reset về mặc định\n"
+        "<code>/listsite</code>  — Danh sách site khả dụng\n\n"
+
+        "🔧 <b>TOOLS</b>\n"
+        "<code>/myid</code>  — ID Telegram của bạn\n"
+        "<code>/chatid</code>  — ID chat/group hiện tại\n"
+        "<code>/info</code>  — Thông tin user (reply vào tin nhắn)\n\n"
+
+        "👑 <b>ADMIN ONLY</b>\n"
+        "<code>/stopbot</code>  — Dừng bot\n"
+        "<code>/startbot</code>  — Chạy lại bot\n"
+        "<code>/botstatus</code>  — Trạng thái bot\n"
+        "<code>/adefaultsite URL</code>  — Đổi site mặc định\n"
+        "<code>/adefaultproxy proxy</code>  — Đổi proxy mặc định\n"
+        "<code>/asetsite ID URL</code>  — Đặt site cho user\n"
+        "<code>/asetproxy ID proxy</code>  — Đặt proxy cho user\n"
+        "<code>/aview ID</code>  — Xem settings của user\n"
+        "<code>/areset ID</code>  — Reset settings của user\n"
+        "<code>/listusers</code>  — Danh sách users\n\n"
+
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "📌 <b>Supported Format:</b>\n"
-        "<code>4141700005988396|03|26|699</code>\n"
-        "<code>5426340331431119|11|2026|079</code>\n\n"
-        "💡 Multiple cards at once:\n"
-        "<code>/chg\n"
-        "4147181435715762|10|2030|057\n"
-        "5426340331431119|11|2026|079</code>\n\n"
-        "🔹 <code>/gen 414170</code> — Generate cards from BIN\n"
-        "🔹 <code>/gen 414170 20</code> — Generate 20 cards\n"
-        "🔹 <code>/gen 414170|03|2026</code> — With exp\n\n"
-        "🔹 <code>/myid</code> — Show your Telegram ID\n"
-        "🔹 <code>/chatid</code> — Show current chat/group ID\n\n"
-        "⚠️ Each user has their own settings.\n"
-        "🗑️ Results auto-delete after 1 minute."
+        "📌 Format: <code>số_thẻ|mm|yyyy|cvv</code>\n"
+        "🗑️ Kết quả tự xóa sau 1 phút"
     )
     msg_id = send_message(chat_id, text)
     # Auto-delete both user command and bot reply
@@ -1211,6 +1221,97 @@ def handle_info(chat_id, user_id, message, user_msg_id):
     msg_ids_to_delete.append(msg_id)
     schedule_delete_multiple(chat_id, msg_ids_to_delete)
 
+# ==================== BOT CONTROL (ADMIN) ====================
+
+def handle_stopbot(chat_id, user_id, user_msg_id):
+    """Admin: /stopbot - pause bot from processing new commands"""
+    global bot_running
+    msg_ids_to_delete = [user_msg_id]
+
+    if not is_admin(user_id):
+        msg_id = send_message(chat_id, "❌ Admin only!")
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    if not bot_running:
+        msg_id = send_message(chat_id,
+            "⚠️ <b>Bot is already stopped!</b>\n"
+            "Use <code>/startbot</code> to resume."
+        )
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    bot_running = False
+    msg_id = send_message(chat_id,
+        "🛑 <b>Bot has been STOPPED!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⏸️ Bot will no longer process commands.\n"
+        "Use <code>/startbot</code> to resume."
+    )
+    msg_ids_to_delete.append(msg_id)
+    schedule_delete_multiple(chat_id, msg_ids_to_delete)
+
+def handle_startbot(chat_id, user_id, user_msg_id):
+    """Admin: /startbot - resume bot processing"""
+    global bot_running
+    msg_ids_to_delete = [user_msg_id]
+
+    if not is_admin(user_id):
+        msg_id = send_message(chat_id, "❌ Admin only!")
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    if bot_running:
+        msg_id = send_message(chat_id,
+            "✅ <b>Bot is already running!</b>\n"
+            "Use <code>/stopbot</code> to pause."
+        )
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    bot_running = True
+    msg_id = send_message(chat_id,
+        "▶️ <b>Bot has been STARTED!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "✅ Bot is now processing commands again.\n"
+        "Use <code>/stopbot</code> to pause."
+    )
+    msg_ids_to_delete.append(msg_id)
+    schedule_delete_multiple(chat_id, msg_ids_to_delete)
+
+def handle_botstatus(chat_id, user_id, user_msg_id):
+    """Admin: /botstatus - check if bot is running or stopped"""
+    msg_ids_to_delete = [user_msg_id]
+
+    if not is_admin(user_id):
+        msg_id = send_message(chat_id, "❌ Admin only!")
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    if bot_running:
+        status_text = (
+            "✅ <b>Bot Status: RUNNING</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "▶️ Bot is actively processing commands.\n"
+            "Use <code>/stopbot</code> to pause."
+        )
+    else:
+        status_text = (
+            "🛑 <b>Bot Status: STOPPED</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⏸️ Bot is paused, not processing commands.\n"
+            "Use <code>/startbot</code> to resume."
+        )
+
+    msg_id = send_message(chat_id, status_text)
+    msg_ids_to_delete.append(msg_id)
+    schedule_delete_multiple(chat_id, msg_ids_to_delete)
+
 # ==================== MAIN LOOP ====================
 
 def process_message(message):
@@ -1228,6 +1329,21 @@ def process_message(message):
         return
 
     text_lower = text.lower().strip()
+
+    # Bot control commands always work (even when bot is stopped)
+    if text_lower.startswith("/stopbot"):
+        handle_stopbot(chat_id, user_id, user_msg_id)
+        return
+    elif text_lower.startswith("/startbot"):
+        handle_startbot(chat_id, user_id, user_msg_id)
+        return
+    elif text_lower.startswith("/botstatus"):
+        handle_botstatus(chat_id, user_id, user_msg_id)
+        return
+
+    # If bot is stopped, ignore all other commands
+    if not bot_running:
+        return
 
     if text_lower.startswith("/start") or text_lower.startswith("/help"):
         handle_start(chat_id, user_msg_id)
@@ -1318,5 +1434,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
