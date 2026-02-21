@@ -699,14 +699,23 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
     # Get THIS USER's settings (not chat-wide)
     site, proxy = get_settings(user_id)
 
-    # Determine concurrency: use proxy pool size (min 1, max 10 workers)
+    # Determine concurrency:
+    # - If proxy pool has proxies: use min(pool_size, 10) workers (true parallel)
+    # - If no proxy pool: still use parallel with min(total, 5) workers (same proxy, concurrent)
     pool_size = len(get_proxy_pool())
-    max_workers = max(1, min(pool_size, 10)) if pool_size > 0 else 1
-    parallel = max_workers > 1
+    if pool_size > 0:
+        max_workers = min(pool_size, 10)
+    else:
+        # Even without pool, run concurrently (API server handles rate limiting)
+        max_workers = min(total, 5)
+    parallel = True  # always parallel
 
     # Send initial status message
     total = len(parsed_cards)
-    proxy_info = f"🔀 Proxies: {pool_size} (parallel x{max_workers})" if parallel else "🔒 Proxy: single (sequential)"
+    if pool_size > 0:
+        proxy_info = f"🔀 Pool: {pool_size} proxies → parallel x{max_workers}"
+    else:
+        proxy_info = f"⚡ Parallel x{max_workers} (single proxy, concurrent)"
     status_text = (
         f"🔄 <b>Checking {total} card(s)...</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -764,78 +773,49 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
 
         return idx, result_line, is_live_card, status_label
 
-    if parallel:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_check_one, i, card_data): i
-                for i, card_data in enumerate(parsed_cards)
-            }
-            for future in as_completed(futures):
-                try:
-                    idx, result_line, is_live_card, status_label = future.result()
-                except Exception as exc:
-                    idx = futures[future]
-                    result_line = f"❌ <code>ERROR</code> | {exc}"
-                    is_live_card = False
+    # Always run parallel (ThreadPoolExecutor handles concurrency)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_check_one, i, card_data): i
+            for i, card_data in enumerate(parsed_cards)
+        }
+        for future in as_completed(futures):
+            try:
+                idx, result_line, is_live_card, status_label = future.result()
+            except Exception as exc:
+                idx = futures[future]
+                result_line = f"❌ <code>ERROR</code> | {exc}"
+                is_live_card = False
 
-                with results_lock:
-                    results_map[idx] = result_line
-                    if is_live_card:
-                        live_count += 1
-                    else:
-                        die_count += 1
-                    completed += 1
-                    done = completed
+            with results_lock:
+                results_map[idx] = result_line
+                if is_live_card:
+                    live_count += 1
+                else:
+                    die_count += 1
+                completed += 1
+                done = completed
 
-                # Update progress
-                if status_msg_id and (done % 3 == 0 or done == total):
-                    elapsed = int(time.time() - start_time)
-                    recent = [results_map[k] for k in sorted(results_map)[-5:]]
-                    progress_text = (
-                        f"🔄 <b>Checking {total} card(s)...</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"👤 User: {user_name}\n"
-                        f"🔀 Parallel x{max_workers} | {pool_size} proxies\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📊 Progress: {done}/{total}\n"
-                        f"✅ Live: {live_count} | ❌ Die: {die_count}\n"
-                        f"⏱️ Elapsed: {elapsed}s\n\n"
-                    )
-                    progress_text += "\n".join(recent)
-                    if done < total:
-                        progress_text += f"\n\n⏳ Checking remaining {total - done} card(s)..."
-                    edit_message(chat_id, status_msg_id, progress_text)
-    else:
-        # Sequential (no proxy pool)
-        for i, card_data in enumerate(parsed_cards):
-            idx, result_line, is_live_card, status_label = _check_one(i, card_data)
-            results_map[idx] = result_line
-            if is_live_card:
-                live_count += 1
-            else:
-                die_count += 1
-            completed += 1
-
-            update_interval = 1 if total <= 10 else 3
-            if status_msg_id and (completed % update_interval == 0 or completed == total):
+            # Update progress every card (or every 3 for large batches)
+            update_interval = 1 if total <= 5 else 3
+            if status_msg_id and (done % update_interval == 0 or done == total):
                 elapsed = int(time.time() - start_time)
                 recent = [results_map[k] for k in sorted(results_map)[-5:]]
                 progress_text = (
                     f"🔄 <b>Checking {total} card(s)...</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"👤 User: {user_name}\n"
+                    f"⚡ Parallel x{max_workers}"
+                    + (f" | {pool_size} proxies" if pool_size > 0 else "") + "\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"📊 Progress: {completed}/{total}\n"
+                    f"📊 Progress: {done}/{total}\n"
                     f"✅ Live: {live_count} | ❌ Die: {die_count}\n"
                     f"⏱️ Elapsed: {elapsed}s\n\n"
                 )
                 progress_text += "\n".join(recent)
-                if completed < total:
-                    progress_text += f"\n\n⏳ Checking next card..."
+                if done < total:
+                    progress_text += f"\n\n⏳ Checking remaining {total - done} card(s)..."
                 edit_message(chat_id, status_msg_id, progress_text)
-
-            if completed < total:
-                time.sleep(15)
 
     # Build ordered results list
     results_text = [results_map[k] for k in sorted(results_map)]
@@ -856,9 +836,9 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
         f"📋 Total: {total} | ✅ Live: {live_count} | ❌ Die: {die_count}\n"
         f"⏱️ Time: {mins}m {secs}s\n"
         f"🌐 Site: <code>{site}</code>\n"
+        f"⚡ Parallel x{max_workers}"
+        + (f" ({pool_size} proxies)" if pool_size > 0 else "") + "\n"
     )
-    if parallel:
-        final_text += f"🔀 Parallel x{max_workers} ({pool_size} proxies)\n"
     final_text += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
     if all_site_errors or site_error_count > 0:
@@ -1291,19 +1271,20 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
     
     total = len(cards)
 
-    # Determine concurrency from proxy pool
+    # Always parallel: use pool size or fallback to min(total, 5) workers
     pool_size = len(get_proxy_pool())
-    max_workers = max(1, min(pool_size, 10)) if pool_size > 0 else 1
-    parallel = max_workers > 1
-
-    proxy_info = f"🔀 Proxies: {pool_size} (parallel x{max_workers})" if parallel else "🔒 Single proxy (sequential)"
+    if pool_size > 0:
+        max_workers = min(pool_size, 10)
+        proxy_info = f"⚡ Parallel x{max_workers} | {pool_size} proxies"
+    else:
+        max_workers = min(total, 5)
+        proxy_info = f"⚡ Parallel x{max_workers} (concurrent)"
 
     status_msg_id = send_message(chat_id,
         f"{gate_emoji} <b>{gate_name} Checker</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: {user_name}\n"
-        f"📋 Cards: {total}\n"
-        f"{proxy_info}\n"
+        f"📋 Cards: {total} | {proxy_info}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"⏳ Processing..."
     )
@@ -1331,74 +1312,47 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
             result_line += f"\n   └ Extra: {extra_val}"
         return idx, result_line, label == "LIVE"
 
-    if parallel:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_check_gw_one, i, card_format): i
-                for i, card_format in enumerate(cards)
-            }
-            for future in as_completed(futures):
-                try:
-                    idx, result_line, is_live_card = future.result()
-                except Exception as exc:
-                    idx = futures[future]
-                    result_line = f"❌ <code>ERROR</code> | {exc}"
-                    is_live_card = False
+    # Always parallel
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_check_gw_one, i, card_format): i
+            for i, card_format in enumerate(cards)
+        }
+        for future in as_completed(futures):
+            try:
+                idx, result_line, is_live_card = future.result()
+            except Exception as exc:
+                idx = futures[future]
+                result_line = f"❌ <code>ERROR</code> | {exc}"
+                is_live_card = False
 
-                with results_lock:
-                    results_map[idx] = result_line
-                    if is_live_card:
-                        live_count += 1
-                    else:
-                        die_count += 1
-                    completed += 1
-                    done = completed
+            with results_lock:
+                results_map[idx] = result_line
+                if is_live_card:
+                    live_count += 1
+                else:
+                    die_count += 1
+                completed += 1
+                done = completed
 
-                if status_msg_id and (done % 3 == 0 or done == total):
-                    elapsed = int(time.time() - start_time)
-                    recent = [results_map[k] for k in sorted(results_map)[-5:]]
-                    progress_text = (
-                        f"{gate_emoji} <b>{gate_name} Checker</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"👤 User: {user_name}\n"
-                        f"🔀 Parallel x{max_workers} | {pool_size} proxies\n"
-                        f"📊 Progress: {done}/{total} | ✅ {live_count} | ❌ {die_count}\n"
-                        f"⏱️ Elapsed: {elapsed}s\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    )
-                    progress_text += "\n\n".join(recent)
-                    if done < total:
-                        progress_text += f"\n\n⏳ Checking remaining {total - done}..."
-                    edit_message(chat_id, status_msg_id, progress_text)
-    else:
-        for i, card_format in enumerate(cards):
-            idx, result_line, is_live_card = _check_gw_one(i, card_format)
-            results_map[idx] = result_line
-            if is_live_card:
-                live_count += 1
-            else:
-                die_count += 1
-            completed += 1
-
-            update_interval = 1 if total <= 10 else 3
-            if status_msg_id and (completed % update_interval == 0 or completed == total):
+            update_interval = 1 if total <= 5 else 3
+            if status_msg_id and (done % update_interval == 0 or done == total):
                 elapsed = int(time.time() - start_time)
                 recent = [results_map[k] for k in sorted(results_map)[-5:]]
                 progress_text = (
                     f"{gate_emoji} <b>{gate_name} Checker</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"👤 User: {user_name}\n"
-                    f"📊 Progress: {completed}/{total} | ✅ {live_count} | ❌ {die_count}\n"
+                    f"⚡ Parallel x{max_workers}"
+                    + (f" | {pool_size} proxies" if pool_size > 0 else "") + "\n"
+                    f"📊 Progress: {done}/{total} | ✅ {live_count} | ❌ {die_count}\n"
                     f"⏱️ Elapsed: {elapsed}s\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 )
                 progress_text += "\n\n".join(recent)
-                if completed < total:
-                    progress_text += f"\n\n⏳ Checking next..."
+                if done < total:
+                    progress_text += f"\n\n⏳ Checking remaining {total - done}..."
                 edit_message(chat_id, status_msg_id, progress_text)
-
-            if completed < total:
-                time.sleep(2)
 
     # Build ordered results
     results_text = [results_map[k] for k in sorted(results_map)]
@@ -1414,9 +1368,9 @@ def handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, gateway
         f"👤 User: {user_name}\n"
         f"📋 Total: {total} | ✅ Live: {live_count} | ❌ Die: {die_count}\n"
         f"⏱️ Time: {mins}m {secs}s\n"
+        f"⚡ Parallel x{max_workers}"
+        + (f" ({pool_size} proxies)" if pool_size > 0 else "") + "\n"
     )
-    if parallel:
-        final_text += f"🔀 Parallel x{max_workers} ({pool_size} proxies)\n"
     final_text += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
     final_text += "\n\n".join(results_text)
     final_text += f"\n\n🗑️ <i>Auto-delete in {AUTO_DELETE_DELAY}s</i>"
