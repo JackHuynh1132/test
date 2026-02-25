@@ -56,7 +56,6 @@ ULTRA_HEADERS = {
     'sec-ch-ua-mobile': '?1',
     'sec-ch-ua-platform': '"Android"',
 }
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = "7326105005:AAHwps79h6NTVYzDBTrCdG8JoIdz39Gz_AA"
@@ -623,6 +622,16 @@ def handle_start(chat_id, user_msg_id):
         "🛡️ <b>STRIPE VBV CHECK</b>\n"
         "<code>/vbv 4111111111111111|03|2026|123</code>\n"
         "<code>/vbv</code>  <i>(nhiều thẻ, mỗi dòng 1 thẻ)</i>\n\n"
+
+        "🅿️ <b>CHECK PAYPAL</b>\n"
+        "<code>/pp 4117740076639353|09|2029|128</code>\n"
+        "<code>/pp</code>  <i>(nhiều thẻ, tối đa 20)</i>\n\n"
+
+        "🎲 <b>GENERATE CARDS</b>\n"
+        "<code>/gen 414170</code>  — 10 thẻ ngẫu nhiên\n"
+        "<code>/gen 414170 20</code>  — 20 thẻ\n"
+        "<code>/gen 414170|03|2026</code>  — cố định exp\n"
+        "<code>/gen 4147xxxxxxxx</code>  — x = số ngẫu nhiên\n\n"
 
         "⚙️ <b>SETTINGS</b>\n"
         "<code>/settings</code>  — Xem cài đặt hiện tại\n"
@@ -2239,6 +2248,12 @@ def process_message(message):
         handle_stripe_check(chat_id, user_id, text, user_name, user_msg_id, mode="auth")
     elif text_lower.startswith("/vbv"):
         handle_stripe_check(chat_id, user_id, text, user_name, user_msg_id, mode="vbv")
+    elif text_lower.startswith("/pp"):
+        handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, 'pp')
+    elif text_lower.startswith("/b3"):
+        handle_gateway_check(chat_id, user_id, text, user_name, user_msg_id, 'b3')
+    elif text_lower.startswith("/gen"):
+        handle_gen(chat_id, text, user_msg_id)
     elif text_lower.startswith("/myid"):
         handle_myid(chat_id, user_id, user_msg_id)
     elif text_lower.startswith("/info"):
